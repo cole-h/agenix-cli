@@ -1,0 +1,15 @@
+[package]
+name = "agenix"
+version = "0.1.0"
+authors = ["Cole Helbling <cole.e.helbling@outlook.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+age = { git = "https://github.com/str4d/rage", features = [ "ssh", "armor" ] }
+clap = { version = "3.0.0-beta.2", default-features = false, features = ["std", "cargo", "derive"] }
+glob = "0.3.0"
+serde = "1.0.123"
+tempfile = "3.2.0"
+toml = "0.5.8"
