@@ -3,12 +3,13 @@ name = "agenix"
 version = "0.1.0"
 authors = ["Cole Helbling <cole.e.helbling@outlook.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cole-h/agenix-rs"
 
 [dependencies]
-age = { git = "https://github.com/str4d/rage", features = [ "ssh", "armor" ] }
+age = { git = "https://github.com/str4d/rage", default-features = false, features = [ "cli-common", "ssh", "armor" ] }
 clap = { version = "3.0.0-beta.2", default-features = false, features = ["std", "cargo", "derive"] }
+eyre = "0.6.5"
 glob = "0.3.0"
 serde = "1.0.123"
 tempfile = "3.2.0"
