@@ -1,3 +1,5 @@
+//! The `agenix` command-line interface.
+
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
@@ -10,12 +12,19 @@ use age::{
     Decryptor, Encryptor,
 };
 use clap::{Clap, ValueHint};
+use env_logger::{fmt::Color, Builder, WriteStyle};
 use eyre::{eyre, Result, WrapErr};
+use log::{debug, info, trace, warn, Level, LevelFilter};
 use serde::Deserialize;
 
 /// The maximum number of directories `agenix` is allowed to ascend in search of
 /// the `.agenix.toml` configuration.
 const MAX_DEPTH: usize = 100;
+
+#[doc(hidden)]
+const CR: [u8; 1] = [0x0a];
+#[doc(hidden)]
+const CRLF: [u8; 2] = [0x0a, 0x0d];
 
 /// The `agenix` command-line options.
 #[derive(Clap, Debug)]
@@ -36,7 +45,9 @@ struct Agenix {
     /// ASCII-armored output.
     #[clap(short, long)]
     binary: bool,
-    // TODO: verbose?
+    /// The verbosity of logging. By default only prints errors and warnings.
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: u8,
 }
 
 /// The `.agenix.toml` configuration schema.
@@ -90,18 +101,49 @@ struct PathSpec {
     /// glob. Can either be a name from the identities table, or a bare key
     /// (e.g. `age...` or `ssh-ed25519 ...` or `ssh-rsa ...`).
     identities: Vec<String>,
+    // TODO:  keyfile: Vec<PathBuf>? to sidestep the necessity of -i for age keys
 }
 
-/// The main `agenix` command-line interface.
+/// Run `agenix`.
 pub fn run() -> Result<()> {
     let opts = Agenix::parse();
-    let conf = toml::from_str::<Config>(&read_config()?)?;
-    let recipients = get_recipients_from_config(conf, &opts.path)?;
+    let max_level = match opts.verbose {
+        0 => LevelFilter::Warn,
+        1 => LevelFilter::Info,
+        2 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
+
+    Builder::new()
+        .format(|buf, record| {
+            let mut style = buf.style();
+
+            match record.level() {
+                Level::Trace => style.set_color(Color::Cyan),
+                Level::Debug => style.set_color(Color::Blue),
+                Level::Info => style.set_color(Color::Green),
+                Level::Warn => style.set_color(Color::Yellow),
+                Level::Error => style.set_color(Color::Red).set_bold(true),
+            };
+
+            writeln!(buf, "{:<5} {}", style.value(record.level()), record.args())
+        })
+        .filter(None, max_level)
+        .write_style(WriteStyle::Auto)
+        .try_init()?;
+
+    let conf_path = self::find_config_dir()?
+        .ok_or("failed to find config dir")
+        .map_err(|e| eyre!(e))?;
+    let conf = toml::from_str::<Config>(&self::read_config(&conf_path)?)?;
+    let current_path = env::current_dir()?;
+    let relative_path = current_path.strip_prefix(&conf_path)?.join(&opts.path);
+    let recipients = self::get_recipients_from_config(conf, &relative_path)?;
 
     if recipients.is_empty() {
         return Err(eyre!(
             "file '{}' has no valid recipients",
-            &opts.path.display()
+            &relative_path.display()
         ));
     }
 
@@ -111,14 +153,16 @@ pub fn run() -> Result<()> {
             .map_err(|e| eyre!(e))
             .wrap_err("failed to find suitable editor")?,
     };
+    debug!("editor: '{}'", &editor);
 
-    let decrypted = try_decrypt_target_with_identity(&opts.path, opts.identity)?;
-    let mut temp_file = create_temp_file(&opts.path)?;
+    let decrypted = self::try_decrypt_target_with_identity(&opts.path, opts.identity)?;
+    let mut temp_file = self::create_temp_file(&relative_path)?;
 
     if let Some(ref dec) = decrypted {
         temp_file.write_all(&dec)?;
     }
 
+    trace!("rekey? {}", opts.rekey);
     if !opts.rekey {
         Command::new(editor)
             .arg(&temp_file.path())
@@ -134,46 +178,70 @@ pub fn run() -> Result<()> {
         .open(&temp_file.path())
         .wrap_err("failed to open temporary file for reading")?;
 
-    let mut new = Vec::new();
+    let mut new_contents = Vec::new();
     temp_file.seek(SeekFrom::Start(0))?;
-    temp_file.read_to_end(&mut new)?;
+    temp_file.read_to_end(&mut new_contents)?;
 
-    if new.is_empty() {
-        writeln!(io::stderr(), "contents unchanged")?;
+    if new_contents.is_empty() || new_contents == CR || new_contents == CRLF {
+        warn!("contents empty, not saving");
         return Ok(());
     }
 
     if let Some(ref dec) = decrypted {
-        if !opts.rekey && dec == &new {
-            writeln!(io::stderr(), "contents unchanged")?;
+        if !opts.rekey && dec == &new_contents {
+            warn!("contents unchanged, not saving");
             return Ok(());
         }
     }
 
-    // TODO: create dirs when doing e.g. agenix secrets/a/b/c/d (see passrs)
-    try_encrypt_target_with_recipients(&opts.path, recipients, new, opts.binary)?;
+    self::try_encrypt_target_with_recipients(&opts.path, recipients, new_contents, opts.binary)?;
 
     Ok(())
 }
 
-/// Try to encrypt the given contents into the target path for the specified
-/// recipients, optionally in binary format (as opposed to ASCII-armored
-/// output).
+/// A light wrapper around [`fs::create_dir_all`] that creates all directories
+/// that would allow the specified `file` to be created.
+///
+/// [`fs::create_dir_all`]: https://doc.rust-lang.org/std/fs/fn.create_dir_all.html
+fn create_dirs_to_file(file: &Path) -> Result<()> {
+    if file.exists() {
+        return Ok(());
+    }
+
+    let dir = file
+        .parent()
+        .ok_or(eyre!("path '{}' had no parent", file.display()))?;
+
+    fs::create_dir_all(dir)?;
+
+    Ok(())
+}
+
+/// Try to encrypt the given contents into the `target` path for the specified
+/// `recipients`, optionally in `binary` format (as opposed to the default of
+/// ASCII-armored text).
 fn try_encrypt_target_with_recipients(
     target: &Path,
     recipients: Vec<Box<dyn age::Recipient>>,
     contents: Vec<u8>,
     binary: bool,
 ) -> Result<()> {
+    self::create_dirs_to_file(&target)
+        .wrap_err_with(|| format!("failed to create directories to '{}'", &target.display()))?;
+
     let target = fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open(&target)?;
+        .open(&target)
+        .wrap_err_with(|| format!("failed to open '{}' for writing", &target.display()))?;
+
+    trace!("binary format? {}", binary);
     let format = match binary {
         true => Format::Binary,
         false => Format::AsciiArmor,
     };
+
     let encryptor = Encryptor::with_recipients(recipients);
     let mut output = encryptor.wrap_output(ArmoredWriter::wrap_output(target, format)?)?;
 
@@ -199,18 +267,24 @@ fn try_decrypt_target_with_identity(
         let dec = match Decryptor::new(ArmoredReader::new(&contents[..]))? {
             Decryptor::Recipients(d) => {
                 let mut decrypted = Vec::new();
-                let id = get_identity(identity)?;
+                let id = self::get_identity(identity)?;
                 let mut reader = d.decrypt(id.into_iter())?;
                 reader.read_to_end(&mut decrypted)?;
 
                 decrypted
             }
-            _ => unimplemented!(),
+            Decryptor::Passphrase(_) => {
+                return Err(eyre!("age password-encrypted files are not supported"));
+            }
         };
 
         Ok(Some(dec))
     } else {
-        // TODO: logging here that specified path wasn't a file or didn't exist
+        info!(
+            "specified path '{}' is not a file or does not exist; not decrypting",
+            target.display()
+        );
+
         Ok(None)
     }
 }
@@ -223,7 +297,7 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
     for path in conf.paths {
         let glob = glob::Pattern::new(&path.glob)?;
 
-        if glob.matches(&normalize_path(&target)?.display().to_string()) {
+        if glob.matches(&self::normalize_path(&target)?.display().to_string()) {
             for key in path.identities {
                 let key = match conf.identities.get(&key) {
                     Some(key) => key,
@@ -231,12 +305,15 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
                 };
 
                 if let Ok(pk) = key.parse::<age::x25519::Recipient>().map(Box::new) {
+                    trace!("got valid age identity '{}'", &key);
                     recipients.push(pk);
                 } else if let Ok(pk) = key.parse::<age::ssh::Recipient>().map(Box::new) {
+                    trace!("got valid ssh identity '{}'", &key);
                     recipients.push(pk);
                 } else {
-                    // TODO: log that &key wasn't an age or ssh key, or didn't
-                    // reference the identities table
+                    warn!("identity '{}' either:", &key);
+                    warn!("  * isn't a valid age, ssh-rsa, or ssh-ed25519 public key; or");
+                    warn!("  * doesn't reference the [identities] table");
                 }
             }
 
@@ -251,7 +328,7 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
 fn get_identity(ident: Option<String>) -> Result<Vec<Box<dyn age::Identity>>> {
     match ident {
         Some(ref id) => {
-            if std::fs::metadata(&id).is_ok() {
+            if fs::metadata(&id).is_ok() {
                 return age::cli_common::read_identities(
                     vec![id.to_string()],
                     |s| eyre!(s),
@@ -282,27 +359,26 @@ fn get_identity(ident: Option<String>) -> Result<Vec<Box<dyn age::Identity>>> {
 
 /// Looks for the directory that contains the config file. Used for resolving
 /// the contained paths.
-fn find_config_dir() -> Option<PathBuf> {
-    let mut p = env::current_dir().ok()?;
+fn find_config_dir() -> Result<Option<PathBuf>> {
+    let mut p = env::current_dir()?;
 
     for _ in 0..MAX_DEPTH {
+        debug!("checking '{}' for .agenix.toml config", p.display());
         let found = p.join(".agenix.toml");
 
         if !found.exists() {
-            p.push("..");
+            p = p.join("..").canonicalize()?;
         } else {
-            return Some(p);
+            debug!("found config at '{}'", found.display());
+            return Ok(Some(p));
         }
     }
 
-    None
+    Ok(None)
 }
 
 /// Read the config file and return its contents as a `String`.
-fn read_config() -> Result<String> {
-    let conf_path = find_config_dir()
-        .ok_or("failed to find config dir")
-        .map_err(|e| eyre!(e))?;
+fn read_config(conf_path: &Path) -> Result<String> {
     let f = File::open(conf_path.join(".agenix.toml"))?;
     let mut b = BufReader::new(f);
     let mut contents = String::new();
@@ -365,7 +441,7 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
         match component {
             Component::Prefix(..) => unreachable!(),
             Component::RootDir | Component::ParentDir => {
-                return Err(eyre!("glob may not refer to the filesystem root (`/`) or the parent directory (`../`)"));
+                return Err(eyre!("path may not refer to the filesystem root (`/`) or the parent directory (`../`)"));
             }
             Component::CurDir => {}
             Component::Normal(c) => {
