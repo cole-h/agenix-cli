@@ -10,10 +10,17 @@ repository = "https://github.com/cole-h/agenix-rs"
 # TODO: https://github.com/str4d/rage/issues/194
 age = { git = "https://github.com/str4d/rage", default-features = false, features = [ "cli-common", "ssh", "armor" ] }
 clap = { version = "3.0.0-beta.2", default-features = false, features = [ "std", "cargo", "derive" ] }
+color-eyre = { version = "0.5.10", default-features = false }
 env_logger = { version = "0.8.2", default-features = false, features = [ "termcolor", "atty" ] }
-eyre = "0.6.5"
 glob = "0.3.0"
 log = "0.4.14"
 serde = "1.0.123"
 tempfile = "3.2.0"
 toml = "0.5.8"
+
+[profile.dev.package.backtrace]
+opt-level = 3
+
+[profile.release]
+lto = true
+debug = 1

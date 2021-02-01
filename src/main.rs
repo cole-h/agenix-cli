@@ -1,8 +1,20 @@
+use std::io::{self, Write};
+
+use color_eyre::eyre::Result;
+
 mod cli;
 
 #[doc(hidden)]
-fn main() {
+fn main() -> Result<()> {
+    color_eyre::config::HookBuilder::default()
+        .display_env_section(false)
+        .install()?;
+
     if let Err(e) = cli::run() {
-        eprintln!("{:?}", e);
+        writeln!(io::stderr(), "\nError: {:?}", e)?;
+
+        std::process::exit(1);
     }
+
+    Ok(())
 }

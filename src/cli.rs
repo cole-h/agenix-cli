@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf, MAIN_SEPARATOR};
 use std::process::{Command, Stdio};
 
@@ -11,9 +11,9 @@ use age::{
     armor::{ArmoredReader, ArmoredWriter, Format},
     Decryptor, Encryptor,
 };
-use clap::{Clap, ValueHint};
-use env_logger::{fmt::Color, Builder, WriteStyle};
-use eyre::{eyre, Result, WrapErr};
+use clap::Clap;
+use color_eyre::eyre::{bail, eyre, Result, WrapErr};
+use env_logger::{fmt::Color, WriteStyle};
 use log::{debug, info, trace, warn, Level, LevelFilter};
 use serde::Deserialize;
 
@@ -22,15 +22,15 @@ use serde::Deserialize;
 const MAX_DEPTH: usize = 100;
 
 #[doc(hidden)]
-const CR: [u8; 1] = [0x0a];
+const LF: [u8; 1] = [0x0a];
 #[doc(hidden)]
-const CRLF: [u8; 2] = [0x0a, 0x0d];
+const CRLF: [u8; 2] = [0x0d, 0x0a];
 
 /// The `agenix` command-line options.
 #[derive(Clap, Debug)]
 struct Agenix {
     /// The file to edit.
-    #[clap(parse(from_os_str), value_hint = ValueHint::FilePath)]
+    #[clap(parse(from_os_str))]
     path: PathBuf,
     /// Whether to re-encrypt the specified file.
     #[clap(short, long)]
@@ -41,11 +41,14 @@ struct Agenix {
     /// whichever (if any) exists.
     #[clap(short, long)]
     identity: Option<String>,
-    /// Whether or not to save encrypted files in binary format. Defaults to
-    /// ASCII-armored output.
+    /// Whether or not to save encrypted files in binary format.
+    ///
+    /// By default, output files are ASCII-armored.
     #[clap(short, long)]
     binary: bool,
-    /// The verbosity of logging. By default only prints errors and warnings.
+    /// The verbosity of logging.
+    ///
+    /// By default, only warnings and errors are printed.
     #[clap(short, long, parse(from_occurrences))]
     verbose: u8,
 }
@@ -84,14 +87,14 @@ struct Agenix {
 /// ]
 /// ```
 #[derive(Debug, Deserialize)]
-struct Config {
+struct AgenixConfig {
     /// A list of names and their associated identities.
     identities: HashMap<String, String>,
     /// A list of paths managed by `agenix`.
     paths: Vec<PathSpec>,
 }
 
-/// The `paths` array-of-tables.
+/// The `[[paths]]` array-of-tables.
 #[derive(Debug, Deserialize)]
 struct PathSpec {
     /// All paths matching this glob (relative to the `.agenix.toml` file) will
@@ -104,6 +107,16 @@ struct PathSpec {
     // TODO:  keyfile: Vec<PathBuf>? to sidestep the necessity of -i for age keys
 }
 
+/// A structure that contains the `.agenix.toml` configuration and the root
+/// directory of that configuration.
+#[derive(Debug)]
+struct Config {
+    /// The `.agenix.toml` configuration.
+    agenix: AgenixConfig,
+    /// The root directory of the configuration.
+    root: PathBuf,
+}
+
 /// Run `agenix`.
 pub fn run() -> Result<()> {
     let opts = Agenix::parse();
@@ -114,7 +127,7 @@ pub fn run() -> Result<()> {
         _ => LevelFilter::Trace,
     };
 
-    Builder::new()
+    env_logger::Builder::new()
         .format(|buf, record| {
             let mut style = buf.style();
 
@@ -128,61 +141,86 @@ pub fn run() -> Result<()> {
 
             writeln!(buf, "{:<5} {}", style.value(record.level()), record.args())
         })
-        .filter(None, max_level)
+        .filter(Some(env!("CARGO_PKG_NAME")), max_level) // only log for agenix
         .write_style(WriteStyle::Auto)
-        .try_init()?;
+        .try_init()
+        .wrap_err("Failed to initialize logging")?;
 
-    let conf_path = self::find_config_dir()?
-        .ok_or("failed to find config dir")
-        .map_err(|e| eyre!(e))?;
-    let conf = toml::from_str::<Config>(&self::read_config(&conf_path)?)?;
-    let current_path = env::current_dir()?;
-    let relative_path = current_path.strip_prefix(&conf_path)?.join(&opts.path);
-    let recipients = self::get_recipients_from_config(conf, &relative_path)?;
+    let conf_path = self::find_config_dir()?.ok_or(eyre!("Failed to find config root"))?;
+    let agenix_conf = toml::from_str::<AgenixConfig>(
+        &self::read_config(&conf_path).wrap_err("Failed to read config file")?,
+    )
+    .wrap_err("Failed to parse config as TOML")?;
+
+    let conf = Config {
+        agenix: agenix_conf,
+        root: conf_path,
+    };
+
+    let current_path = env::current_dir().wrap_err("Failed to get current directory")?;
+    let relative_path = current_path
+        .strip_prefix(&conf.root)
+        .wrap_err_with(|| {
+            format!(
+                "Failed to strip prefix '{}' of '{}'",
+                &conf.root.display(),
+                &current_path.display()
+            )
+        })?
+        .join(&opts.path);
+    let recipients = self::get_recipients_from_config(conf, &relative_path)
+        .wrap_err("Failed to get recipients from config file")?;
 
     if recipients.is_empty() {
-        return Err(eyre!(
-            "file '{}' has no valid recipients",
+        bail!(
+            "File '{}' has no valid recipients",
             &relative_path.display()
-        ));
+        );
     }
 
     let editor = match env::var("EDITOR") {
         Ok(editor) => editor,
         Err(_) => env::var("VISUAL")
             .map_err(|e| eyre!(e))
-            .wrap_err("failed to find suitable editor")?,
+            .wrap_err("Failed to find suitable editor")?,
     };
     debug!("editor: '{}'", &editor);
 
-    let decrypted = self::try_decrypt_target_with_identity(&opts.path, opts.identity)?;
-    let mut temp_file = self::create_temp_file(&relative_path)?;
+    let decrypted = self::try_decrypt_target_with_identity(&opts.path, &opts.identity)
+        .wrap_err_with(|| format!("Failed to decrypt file '{}'", &opts.path.display()))?;
+    let mut temp_file =
+        self::create_temp_file(&relative_path).wrap_err("Failed to create temporary file")?;
 
     if let Some(ref dec) = decrypted {
-        temp_file.write_all(&dec)?;
+        temp_file
+            .write_all(&dec)
+            .wrap_err("Failed to write decrypted contents to temporary file")?;
     }
 
     trace!("rekey? {}", opts.rekey);
     if !opts.rekey {
-        Command::new(editor)
+        Command::new(&editor)
             .arg(&temp_file.path())
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .status()
-            .wrap_err("failed to spawn editor")?;
+            .wrap_err_with(|| format!("Failed to spawn editor '{}'", &editor))?;
     }
 
+    let mut new_contents = Vec::new();
     let mut temp_file = fs::OpenOptions::new()
         .read(true)
         .open(&temp_file.path())
-        .wrap_err("failed to open temporary file for reading")?;
+        .wrap_err("Failed to open temporary file for reading")?;
 
-    let mut new_contents = Vec::new();
+    // Ensure the cursor is at the beginning of the file.
     temp_file.seek(SeekFrom::Start(0))?;
-    temp_file.read_to_end(&mut new_contents)?;
+    temp_file
+        .read_to_end(&mut new_contents)
+        .wrap_err("Failed to read new contents from temporary file")?;
 
-    if new_contents.is_empty() || new_contents == CR || new_contents == CRLF {
+    if new_contents.is_empty() || new_contents == LF || new_contents == CRLF {
         warn!("contents empty, not saving");
         return Ok(());
     }
@@ -194,7 +232,8 @@ pub fn run() -> Result<()> {
         }
     }
 
-    self::try_encrypt_target_with_recipients(&opts.path, recipients, new_contents, opts.binary)?;
+    self::try_encrypt_target_with_recipients(&opts.path, recipients, new_contents, opts.binary)
+        .wrap_err_with(|| format!("Failed to encrypt file '{}'", &opts.path.display()))?;
 
     Ok(())
 }
@@ -210,9 +249,10 @@ fn create_dirs_to_file(file: &Path) -> Result<()> {
 
     let dir = file
         .parent()
-        .ok_or(eyre!("path '{}' had no parent", file.display()))?;
+        .ok_or(eyre!("Path '{}' had no parent", file.display()))?;
 
-    fs::create_dir_all(dir)?;
+    fs::create_dir_all(dir)
+        .wrap_err_with(|| format!("Failed to create directories to '{}'", &dir.display()))?;
 
     Ok(())
 }
@@ -227,14 +267,14 @@ fn try_encrypt_target_with_recipients(
     binary: bool,
 ) -> Result<()> {
     self::create_dirs_to_file(&target)
-        .wrap_err_with(|| format!("failed to create directories to '{}'", &target.display()))?;
+        .wrap_err_with(|| format!("Failed to create directories to '{}'", &target.display()))?;
 
     let target = fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(&target)
-        .wrap_err_with(|| format!("failed to open '{}' for writing", &target.display()))?;
+        .wrap_err_with(|| format!("Failed to open '{}' for writing", &target.display()))?;
 
     trace!("binary format? {}", binary);
     let format = match binary {
@@ -243,10 +283,20 @@ fn try_encrypt_target_with_recipients(
     };
 
     let encryptor = Encryptor::with_recipients(recipients);
-    let mut output = encryptor.wrap_output(ArmoredWriter::wrap_output(target, format)?)?;
+    let mut output = encryptor
+        .wrap_output(
+            ArmoredWriter::wrap_output(target, format)
+                .wrap_err("Failed to wrap output with age::ArmoredWriter")?,
+        )
+        .wrap_err("Failed to wrap output with age::Encryptor")?;
 
-    output.write_all(&contents)?;
-    output.finish().and_then(|armor| armor.finish())?;
+    output
+        .write_all(&contents)
+        .wrap_err("Failed to write encrypted contents")?;
+    output
+        .finish()
+        .and_then(|armor| armor.finish())
+        .wrap_err("Failed to finish age transaction")?;
 
     Ok(())
 }
@@ -256,25 +306,35 @@ fn try_encrypt_target_with_recipients(
 /// Uses [`get_identity`](get_identity) to find a valid identity.
 fn try_decrypt_target_with_identity(
     target: &Path,
-    identity: Option<String>,
+    identity: &Option<String>,
 ) -> Result<Option<Vec<u8>>> {
     if target.exists() && target.is_file() {
-        let f = File::open(&target)?;
+        let f = File::open(&target)
+            .wrap_err_with(|| format!("Failed to open '{}'", &target.display()))?;
         let mut b = BufReader::new(f);
         let mut contents = Vec::new();
-        b.read_to_end(&mut contents)?;
 
-        let dec = match Decryptor::new(ArmoredReader::new(&contents[..]))? {
+        b.read_to_end(&mut contents)
+            .wrap_err_with(|| format!("Failed to read '{}'", &target.display()))?;
+
+        let dec = match Decryptor::new(ArmoredReader::new(&contents[..]))
+            .wrap_err_with(|| format!("Failed to parse header of '{}'", &target.display()))?
+        {
             Decryptor::Recipients(d) => {
                 let mut decrypted = Vec::new();
-                let id = self::get_identity(identity)?;
-                let mut reader = d.decrypt(id.into_iter())?;
-                reader.read_to_end(&mut decrypted)?;
+                let id = self::get_identity(&identity).wrap_err("Failed to get usable identity")?;
+                let mut reader = d
+                    .decrypt(id.into_iter())
+                    .wrap_err("Failed to decrypt contents")?;
+
+                reader
+                    .read_to_end(&mut decrypted)
+                    .wrap_err("Failed to read decrypted contents")?;
 
                 decrypted
             }
             Decryptor::Passphrase(_) => {
-                return Err(eyre!("age password-encrypted files are not supported"));
+                bail!("Age password-encrypted files are not supported");
             }
         };
 
@@ -294,12 +354,25 @@ fn try_decrypt_target_with_identity(
 fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn age::Recipient>>> {
     let mut recipients: Vec<Box<dyn age::Recipient>> = Vec::new();
 
-    for path in conf.paths {
-        let glob = glob::Pattern::new(&path.glob)?;
+    for path in conf.agenix.paths {
+        let glob = glob::Pattern::new(&path.glob)
+            .wrap_err_with(|| format!("Failed to construct glob pattern from '{}'", &path.glob))?;
 
-        if glob.matches(&self::normalize_path(&target)?.display().to_string()) {
+        // Roundabout way of checking whether or not a path is trying to escape
+        // the configured directory.
+        if self::normalize_path(&conf.root.join(&target))
+            .strip_prefix(&conf.root)
+            .is_err()
+        {
+            bail!(
+                "Path '{}' tried to escape the agenix config root",
+                &target.display()
+            );
+        }
+
+        if glob.matches(&target.display().to_string()) {
             for key in path.identities {
-                let key = match conf.identities.get(&key) {
+                let key = match conf.agenix.identities.get(&key) {
                     Some(key) => key,
                     None => &key,
                 };
@@ -325,10 +398,11 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
 }
 
 /// Find an acceptable identity to use for decryption.
-fn get_identity(ident: Option<String>) -> Result<Vec<Box<dyn age::Identity>>> {
+fn get_identity(ident: &Option<String>) -> Result<Vec<Box<dyn age::Identity>>> {
     match ident {
         Some(ref id) => {
             if fs::metadata(&id).is_ok() {
+                debug!("using '{}' as identity file", &id);
                 return age::cli_common::read_identities(
                     vec![id.to_string()],
                     |s| eyre!(s),
@@ -337,13 +411,14 @@ fn get_identity(ident: Option<String>) -> Result<Vec<Box<dyn age::Identity>>> {
             }
         }
         None => {
-            let home = env::var("HOME")?;
+            let home = env::var("HOME").wrap_err("Failed to get $HOME")?;
 
             for file in &[
                 format!("{}/.ssh/id_rsa", home),
                 format!("{}/.ssh/id_ed25519", home),
             ] {
                 if fs::metadata(&file).is_ok() {
+                    debug!("using '{}' as identity file", &file);
                     return age::cli_common::read_identities(
                         vec![file.to_string()],
                         |s| eyre!(s),
@@ -354,23 +429,40 @@ fn get_identity(ident: Option<String>) -> Result<Vec<Box<dyn age::Identity>>> {
         }
     }
 
-    Err(eyre!("no usable identity"))
+    Err(eyre!("No usable identity"))
 }
 
 /// Looks for the directory that contains the config file. Used for resolving
 /// the contained paths.
+///
+/// One can specify the `$AGENIX_ROOT` environment variable to set the root
+/// of the `agenix` configuration (requires `.agenix.toml` in this directory).
+/// This will prevent `agenix` from ascending the filesystem in search of
+/// `.agenix.toml`.
 fn find_config_dir() -> Result<Option<PathBuf>> {
-    let mut p = env::current_dir()?;
+    let mut path = env::current_dir().wrap_err("Failed to get current directory")?;
 
-    for _ in 0..MAX_DEPTH {
-        debug!("checking '{}' for .agenix.toml config", p.display());
-        let found = p.join(".agenix.toml");
+    if let Ok(root) = env::var("AGENIX_ROOT") {
+        let dir = PathBuf::from(&root)
+            .canonicalize()
+            .wrap_err_with(|| format!("Failed to canonicalize AGENIX_ROOT ({})", &root))?;
 
-        if !found.exists() {
-            p = p.join("..").canonicalize()?;
+        if dir.is_dir() {
+            return Ok(Some(PathBuf::from(dir)));
         } else {
-            debug!("found config at '{}'", found.display());
-            return Ok(Some(p));
+            warn!("AGENIX_ROOT ({}) isn't a directory", dir.display())
+        }
+    } else {
+        for _ in 0..MAX_DEPTH {
+            debug!("checking '{}' for .agenix.toml config", path.display());
+            let found = path.join(".agenix.toml");
+
+            if !found.exists() {
+                path = path.join("..").canonicalize()?;
+            } else {
+                debug!("found config at '{}'", found.display());
+                return Ok(Some(path));
+            }
         }
     }
 
@@ -379,18 +471,25 @@ fn find_config_dir() -> Result<Option<PathBuf>> {
 
 /// Read the config file and return its contents as a `String`.
 fn read_config(conf_path: &Path) -> Result<String> {
-    let f = File::open(conf_path.join(".agenix.toml"))?;
-    let mut b = BufReader::new(f);
+    let file = File::open(&conf_path.join(".agenix.toml"))
+        .wrap_err_with(|| format!("Failed to load .agenix.toml in '{}'", &conf_path.display()))?;
+    let mut buf = BufReader::new(file);
     let mut contents = String::new();
 
-    b.read_to_string(&mut contents)?;
+    buf.read_to_string(&mut contents).wrap_err_with(|| {
+        format!(
+            "Failed to read contents of .agenix.toml in '{}'",
+            &conf_path.display()
+        )
+    })?;
 
     Ok(contents)
 }
 
 /// Create a tempfile in `$XDG_RUNTIME_DIR` (if set; falling back to `$TMPDIR`
 /// or `/tmp` if unset).
-fn create_temp_file(filename: &Path) -> io::Result<tempfile::NamedTempFile> {
+fn create_temp_file(filename: &Path) -> Result<tempfile::NamedTempFile> {
+    let filename = self::normalize_path(&filename);
     let filename = format!("{}-", filename.display());
     let filename = filename.replace(MAIN_SEPARATOR, "-");
     let temp_dir = match env::var("XDG_RUNTIME_DIR") {
@@ -400,14 +499,23 @@ fn create_temp_file(filename: &Path) -> io::Result<tempfile::NamedTempFile> {
             Err(_) => PathBuf::from("/tmp"),
         },
     };
+
     let temp_file = tempfile::Builder::new()
         .prefix(&filename)
-        .tempfile_in(&temp_dir);
+        .tempfile_in(&temp_dir)
+        .wrap_err_with(|| {
+            format!(
+                "Failed to create temporary file '{}' in '{}'",
+                &filename,
+                &temp_dir.display()
+            )
+        })?;
 
-    temp_file
+    Ok(temp_file)
 }
 
 // https://github.com/rust-lang/cargo/blob/fede83ccf973457de319ba6fa0e36ead454d2e20/src/cargo/util/paths.rs#L61-L86
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to
 // deal in the Software without restriction, including without limitation the
@@ -428,7 +536,7 @@ fn create_temp_file(filename: &Path) -> io::Result<tempfile::NamedTempFile> {
 
 /// Normalize the specified path by stripping `./` and disallowing access to the
 /// root or a parent directory.
-fn normalize_path(path: &Path) -> Result<PathBuf> {
+fn normalize_path(path: &Path) -> PathBuf {
     let mut components = path.components().peekable();
     let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().cloned() {
         components.next();
@@ -440,8 +548,11 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
     for component in components {
         match component {
             Component::Prefix(..) => unreachable!(),
-            Component::RootDir | Component::ParentDir => {
-                return Err(eyre!("path may not refer to the filesystem root (`/`) or the parent directory (`../`)"));
+            Component::RootDir => {
+                ret.push(component.as_os_str());
+            }
+            Component::ParentDir => {
+                ret.pop();
             }
             Component::CurDir => {}
             Component::Normal(c) => {
@@ -450,5 +561,5 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
         }
     }
 
-    Ok(ret)
+    ret
 }
