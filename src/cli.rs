@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 /// The maximum number of directories `agenix` is allowed to ascend in search of
 /// the `.agenix.toml` configuration.
-const MAX_DEPTH: usize = 100;
+const MAX_DEPTH: u8 = 100;
 
 #[doc(hidden)]
 const LF: [u8; 1] = [0x0a];
