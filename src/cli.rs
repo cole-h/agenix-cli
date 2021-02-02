@@ -35,12 +35,13 @@ struct Agenix {
     /// Whether to re-encrypt the specified file.
     #[clap(short, long)]
     rekey: bool,
-    /// The identity to use for decryption.
+    /// The identity or identities to use for decryption. May be specified
+    /// multiple times.
     ///
-    /// If unspecified, falls back to ~/.ssh/id_rsa and then ~/.ssh/id_ed25519,
+    /// If unspecified, falls back to `~/.ssh/id_rsa` and `~/.ssh/id_ed25519`,
     /// whichever (if any) exists.
-    #[clap(short, long)]
-    identity: Option<String>,
+    #[clap(short, long, number_of_values = 1, multiple = true)]
+    identity: Vec<String>,
     /// Whether or not to save encrypted files in binary format.
     ///
     /// By default, output files are ASCII-armored.
@@ -186,7 +187,7 @@ pub fn run() -> Result<()> {
     };
     debug!("editor: '{}'", &editor);
 
-    let decrypted = self::try_decrypt_target_with_identity(&opts.path, &opts.identity)
+    let decrypted = self::try_decrypt_target_with_identities(&opts.path, &opts.identity)
         .wrap_err_with(|| format!("Failed to decrypt file '{}'", &opts.path.display()))?;
     let mut temp_file =
         self::create_temp_file(&relative_path).wrap_err("Failed to create temporary file")?;
@@ -304,9 +305,9 @@ fn try_encrypt_target_with_recipients(
 /// Try to decrypt the given target path with the specified identity.
 ///
 /// Uses [`get_identity`](get_identity) to find a valid identity.
-fn try_decrypt_target_with_identity(
+fn try_decrypt_target_with_identities(
     target: &Path,
-    identity: &Option<String>,
+    identities: &[String],
 ) -> Result<Option<Vec<u8>>> {
     if target.exists() && target.is_file() {
         let f = File::open(&target)
@@ -322,9 +323,10 @@ fn try_decrypt_target_with_identity(
         {
             Decryptor::Recipients(d) => {
                 let mut decrypted = Vec::new();
-                let id = self::get_identity(&identity).wrap_err("Failed to get usable identity")?;
+                let ids = self::get_identities(identities.to_vec())
+                    .wrap_err("Failed to get usable identity or identities")?;
                 let mut reader = d
-                    .decrypt(id.into_iter())
+                    .decrypt(ids.into_iter())
                     .wrap_err("Failed to decrypt contents")?;
 
                 reader
@@ -398,39 +400,30 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
     Ok(recipients)
 }
 
-/// Find an acceptable identity to use for decryption.
-fn get_identity(ident: &Option<String>) -> Result<Vec<Box<dyn age::Identity>>> {
-    match ident {
-        Some(ref id) => {
-            if fs::metadata(&id).is_ok() {
-                debug!("using '{}' as identity file", &id);
-                return age::cli_common::read_identities(
-                    vec![id.to_string()],
-                    |s| eyre!(s),
-                    |s, e| eyre!("{}: {:?}", s, e),
-                );
-            }
-        }
-        None => {
-            let home = env::var("HOME").wrap_err("Failed to get $HOME")?;
+/// Find an acceptable identity or identities to use for decryption.
+fn get_identities(mut identities: Vec<String>) -> Result<Vec<Box<dyn age::Identity>>> {
+    let home = env::var("HOME").wrap_err("Failed to get $HOME")?;
 
-            for file in &[
-                format!("{}/.ssh/id_rsa", home),
-                format!("{}/.ssh/id_ed25519", home),
-            ] {
-                if fs::metadata(&file).is_ok() {
-                    debug!("using '{}' as identity file", &file);
-                    return age::cli_common::read_identities(
-                        vec![file.to_string()],
-                        |s| eyre!(s),
-                        |s, e| eyre!("{}: {:?}", s, e),
-                    );
-                }
-            }
-        }
+    // Always try id_rsa and id_ed25519. This is consistent with the Go
+    // implementation of `age`:
+    // https://github.com/FiloSottile/age/blob/b47610677cea90662979854d63473c3cbdd5315f/cmd/age/age.go#L299-L314
+    identities.extend_from_slice(&[
+        format!("{}/.ssh/id_rsa", home),
+        format!("{}/.ssh/id_ed25519", home),
+    ]);
+
+    identities.retain(|id| fs::metadata(&id).is_ok());
+
+    if !identities.is_empty() {
+        debug!("using {:?} as identity file(s)", &identities);
+        return age::cli_common::read_identities(
+            identities,
+            |s| eyre!(s),
+            |s, e| eyre!("{}: {:?}", s, e),
+        );
     }
 
-    Err(eyre!("No usable identity"))
+    Err(eyre!("No usable identity or identities"))
 }
 
 /// Looks for the directory that contains the config file. Used for resolving
