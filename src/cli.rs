@@ -30,8 +30,7 @@ const CRLF: [u8; 2] = [0x0d, 0x0a];
 #[derive(Clap, Debug)]
 struct Agenix {
     /// The file to edit.
-    #[clap(parse(from_os_str))]
-    path: PathBuf,
+    path: String,
     /// Whether to re-encrypt the specified file.
     #[clap(short, long)]
     rekey: bool,
@@ -121,12 +120,14 @@ struct Config {
 /// Run `agenix`.
 pub fn run() -> Result<()> {
     let opts = Agenix::parse();
-    let max_level = match opts.verbose {
-        0 => LevelFilter::Warn,
-        1 => LevelFilter::Info,
-        2 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    };
+
+    if opts.path.ends_with("/") || Path::new(&opts.path).is_dir() {
+        bail!("agenix cannot operate on a directory. Please specify a filename (whether or not it exists).");
+    }
+
+    if opts.rekey && !Path::new(&opts.path).exists() {
+        bail!("agenix cannot rekey a nonexistent file.");
+    }
 
     env_logger::Builder::new()
         .format(|buf, record| {
@@ -142,7 +143,15 @@ pub fn run() -> Result<()> {
 
             writeln!(buf, "{:<5} {}", style.value(record.level()), record.args())
         })
-        .filter(Some(env!("CARGO_PKG_NAME")), max_level) // only log for agenix
+        .filter(
+            Some(env!("CARGO_PKG_NAME")), // only log for agenix
+            match opts.verbose {
+                0 => LevelFilter::Warn,
+                1 => LevelFilter::Info,
+                2 => LevelFilter::Debug,
+                _ => LevelFilter::Trace,
+            },
+        )
         .write_style(WriteStyle::Auto)
         .try_init()
         .wrap_err("Failed to initialize logging")?;
@@ -188,7 +197,7 @@ pub fn run() -> Result<()> {
     debug!("editor: '{}'", &editor);
 
     let decrypted = self::try_decrypt_target_with_identities(&opts.path, &opts.identity)
-        .wrap_err_with(|| format!("Failed to decrypt file '{}'", &opts.path.display()))?;
+        .wrap_err_with(|| format!("Failed to decrypt file '{}'", &opts.path))?;
     let mut temp_file =
         self::create_temp_file(&relative_path).wrap_err("Failed to create temporary file")?;
 
@@ -234,7 +243,7 @@ pub fn run() -> Result<()> {
     }
 
     self::try_encrypt_target_with_recipients(&opts.path, recipients, new_contents, opts.binary)
-        .wrap_err_with(|| format!("Failed to encrypt file '{}'", &opts.path.display()))?;
+        .wrap_err_with(|| format!("Failed to encrypt file '{}'", &opts.path))?;
 
     Ok(())
 }
@@ -262,11 +271,13 @@ fn create_dirs_to_file(file: &Path) -> Result<()> {
 /// `recipients`, optionally in `binary` format (as opposed to the default of
 /// ASCII-armored text).
 fn try_encrypt_target_with_recipients(
-    target: &Path,
+    target: &str,
     recipients: Vec<Box<dyn age::Recipient>>,
     contents: Vec<u8>,
     binary: bool,
 ) -> Result<()> {
+    let target = Path::new(&target);
+
     self::create_dirs_to_file(&target)
         .wrap_err_with(|| format!("Failed to create directories to '{}'", &target.display()))?;
 
@@ -306,9 +317,11 @@ fn try_encrypt_target_with_recipients(
 ///
 /// Uses [`get_identity`](get_identity) to find a valid identity.
 fn try_decrypt_target_with_identities(
-    target: &Path,
+    target: &str,
     identities: &[String],
 ) -> Result<Option<Vec<u8>>> {
+    let target = Path::new(&target);
+
     if target.exists() && target.is_file() {
         let f = File::open(&target)
             .wrap_err_with(|| format!("Failed to open '{}'", &target.display()))?;
