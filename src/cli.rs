@@ -355,6 +355,7 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
     let mut recipients: Vec<Box<dyn age::Recipient>> = Vec::new();
 
     for path in conf.agenix.paths {
+        let target = self::normalize_path(&target);
         let glob = glob::Pattern::new(&path.glob)
             .wrap_err_with(|| format!("Failed to construct glob pattern from '{}'", &path.glob))?;
 
