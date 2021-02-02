@@ -11,7 +11,7 @@ fn main() -> Result<()> {
         .install()?;
 
     if let Err(e) = cli::run() {
-        writeln!(io::stderr(), "\nError: {:?}", e)?;
+        writeln!(io::stderr(), "Error: {:?}", e)?;
 
         std::process::exit(1);
     }

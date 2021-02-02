@@ -356,7 +356,7 @@ fn try_decrypt_target_with_identities(
         Ok(Some(dec))
     } else {
         info!(
-            "specified path '{}' is not a file or does not exist; not decrypting",
+            "specified path '{}' does not exist; not decrypting",
             target.display()
         );
 
@@ -450,14 +450,14 @@ fn find_config_dir() -> Result<Option<PathBuf>> {
     let mut path = env::current_dir().wrap_err("Failed to get current directory")?;
 
     if let Ok(root) = env::var("AGENIX_ROOT") {
-        let dir = PathBuf::from(&root)
+        let dir = Path::new(&root)
             .canonicalize()
-            .wrap_err_with(|| format!("Failed to canonicalize AGENIX_ROOT ({})", &root))?;
+            .wrap_err_with(|| format!("Failed to canonicalize AGENIX_ROOT ('{}')", &root))?;
 
         if dir.is_dir() {
             return Ok(Some(PathBuf::from(dir)));
         } else {
-            warn!("AGENIX_ROOT ({}) isn't a directory", dir.display())
+            warn!("AGENIX_ROOT ('{}') isn't a directory", dir.display())
         }
     } else {
         for _ in 0..MAX_DEPTH {
@@ -479,7 +479,7 @@ fn find_config_dir() -> Result<Option<PathBuf>> {
 /// Read the config file and return its contents as a `String`.
 fn read_config(conf_path: &Path) -> Result<String> {
     let file = File::open(&conf_path.join(".agenix.toml"))
-        .wrap_err_with(|| format!("Failed to load .agenix.toml in '{}'", &conf_path.display()))?;
+        .wrap_err_with(|| format!("Failed to find .agenix.toml in '{}'", &conf_path.display()))?;
     let mut buf = BufReader::new(file);
     let mut contents = String::new();
 
