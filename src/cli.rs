@@ -12,7 +12,10 @@ use age::{
     Decryptor, Encryptor,
 };
 use clap::Clap;
-use color_eyre::eyre::{bail, eyre, Result, WrapErr};
+use color_eyre::{
+    eyre::{bail, eyre, Result, WrapErr},
+    Section, SectionExt,
+};
 use env_logger::{fmt::Color, WriteStyle};
 use log::{debug, info, trace, warn, Level, LevelFilter};
 use serde::Deserialize;
@@ -209,13 +212,25 @@ pub fn run() -> Result<()> {
 
     trace!("rekey? {}", opts.rekey);
     if !opts.rekey {
-        Command::new(&editor)
+        let cmd = Command::new(&editor)
             .arg(&temp_file.path())
             .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
             .wrap_err_with(|| format!("Failed to spawn editor '{}'", &editor))?;
+
+        if !cmd.status.success() {
+            let stderr = String::from_utf8_lossy(&cmd.stderr);
+            let stdout = String::from_utf8_lossy(&cmd.stdout);
+
+            return Err(eyre!(
+                "Editor '{}' exited with non-zero status code",
+                &editor
+            ))
+            .with_section(|| stderr.trim().to_string().header("Stderr:"))
+            .with_section(|| stdout.trim().to_string().header("Stdout:"));
+        }
     }
 
     let mut new_contents = Vec::new();
