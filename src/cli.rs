@@ -330,7 +330,7 @@ fn try_encrypt_target_with_recipients(
 
 /// Try to decrypt the given target path with the specified identity.
 ///
-/// Uses [`get_identity`](get_identity) to find a valid identity.
+/// Uses [`get_identities`](get_identities) to find a valid identity.
 fn try_decrypt_target_with_identities(
     target: &str,
     identities: &[String],
@@ -556,8 +556,9 @@ fn create_temp_file(filename: &Path) -> Result<tempfile::NamedTempFile> {
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-/// Normalize the specified path by stripping `./` and disallowing access to the
-/// root or a parent directory.
+/// Normalize the specified path by stripping `./` and resolving `../`, without
+/// actually resolving the path (like
+/// [`fs::canonicalize`](std::fs::canonicalize) does).
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components = path.components().peekable();
     let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().cloned() {
