@@ -65,6 +65,12 @@ struct Agenix {
 /// user1 = "age1szr8hp9lrjvc2d2hnr9c56fcj6f5ngnjy8gldnu6qtejnjrp6pmsc47jw8"
 /// machine1 = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDBKD0YBA9vjNiIhBMVZgIjFjY282BfR6JM84HwcemN3Xt/vWaH1k53QzJqAF3LqJBisP9/xCSy+BL8cUV0z9goei3xOrWIfRTk0Hp5xYsVo7POvq1aQ3x+fFj3LAO/7HMYX/VD0jfHilv49HD0eQOiNp0T/OK3NuuFJmh2Wq45GibWRN6zdP42tB+4eKsJf7rIV+kcdybDlYYEiyCbGAcKMqcpzF+3CSQSbqA+XWPiyagUTucnoakjcJvZC6KPfK189t1KYV+1pKB1lD1MLJp+5jiaZFFyFASJ6jCIBO+il9XrCMDVO9RucxY89TBJBp24fd+hYwsH3YxIPN/esnftRePkIFbwIHout/9JVkFNpWeG6vORdAlnkyYmr8lNsodiGAmnGN3diAYNcmPqQ/9m9uovptFZWDB8yXEbnd3DZmTbuyhlrnaqqSE72p2a8WSqFr6aT2F1fk7AKLzJGT6/Grhk/7mXkqF5W7FnKP6D/XqYeNZA1NizUdxZopSJE6c="
 ///
+/// [groups]
+/// machine1Admins = [
+///   "user1",
+///   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKbG8+IyUzm2v37k+SihwJ59JgZYsgU9/cJDUzeZUvgs"
+/// ]
+///
 /// [[paths]]
 /// glob = "secrets/user1/*"
 /// identities = [ "user1" ]
@@ -72,6 +78,7 @@ struct Agenix {
 /// [[paths]]
 /// glob = "secrets/machine1/*"
 /// identities = [ "machine1" ]
+/// groups = [ "machine1Admins" ]
 ///
 /// [[paths]]
 /// glob = "secrets/misc/*"
@@ -91,22 +98,34 @@ struct Agenix {
 /// ```
 #[derive(Debug, Deserialize)]
 struct AgenixConfig {
-    /// A list of names and their associated identities.
+    /// A list of names and their associated identities. Optional.
+    #[serde(default)]
     identities: HashMap<String, String>,
-    /// A list of paths managed by `agenix`.
+    /// A list of group names and their associated identities. Optional.
+    #[serde(default)]
+    groups: HashMap<String, Vec<String>>,
+    /// A list of paths managed by `agenix`. Required.
     paths: Vec<PathSpec>,
 }
 
 /// The `[[paths]]` array-of-tables.
+///
+/// One of `identities` or `groups` must be specified, and both may be specified
+/// at the same time.
 #[derive(Debug, Deserialize)]
 struct PathSpec {
     /// All paths matching this glob (relative to the `.agenix.toml` file) will
-    /// be encrypted to the associated list of identities.
+    /// be encrypted to the associated list of identities. Required.
     glob: String,
     /// A list of identities with access to the files matched by the associated
     /// glob. Can either be a name from the identities table, or a bare key
     /// (e.g. `age...` or `ssh-ed25519 ...` or `ssh-rsa ...`).
+    #[serde(default)]
     identities: Vec<String>,
+    /// A list of groups with access to the files matched by the associated
+    /// glob. Must be a name from the `[groups]` table.
+    #[serde(default)]
+    groups: Vec<String>,
     // TODO:  keyfile: Vec<PathBuf>? to sidestep the necessity of -i for age keys
 }
 
@@ -383,6 +402,13 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
     let mut recipients: Vec<Box<dyn age::Recipient>> = Vec::new();
 
     for path in conf.agenix.paths {
+        if path.identities.is_empty() && path.groups.is_empty() {
+            bail!(
+                "Path '{}' has no associated identities or groups",
+                &target.display()
+            );
+        }
+
         let target = self::normalize_path(&target);
         let glob = glob::Pattern::new(&path.glob)
             .wrap_err_with(|| format!("Failed to construct glob pattern from '{}'", &path.glob))?;
@@ -400,7 +426,20 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
         }
 
         if glob.matches(&target.display().to_string()) {
-            for key in path.identities {
+            let identities = {
+                let mut ids = path.identities;
+
+                for group in path.groups {
+                    match conf.agenix.groups.get(&group) {
+                        Some(i) => ids.extend(i.clone()),
+                        None => (),
+                    }
+                }
+
+                ids
+            };
+
+            for key in identities {
                 let key = match conf.agenix.identities.get(&key) {
                     Some(key) => key,
                     None => &key,
