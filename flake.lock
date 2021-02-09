@@ -1,0 +1,61 @@
+{
+  "nodes": {
+    "crate2nix": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1611576197,
+        "narHash": "sha256-bsLuKU0A8nk1ThGbauUfq9DfXjMKGr7QHa6qNXjS1S0=",
+        "owner": "kolloch",
+        "repo": "crate2nix",
+        "rev": "509918492f7c5e6cff1697e1857a383f46bf6a76",
+        "type": "github"
+      },
+      "original": {
+        "owner": "kolloch",
+        "repo": "crate2nix",
+        "type": "github"
+      }
+    },
+    "mozilla": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1603906276,
+        "narHash": "sha256-RsNPnEKd7BcogwkqhaV5kI/HuNC4flH/OQCC/4W5y/8=",
+        "owner": "mozilla",
+        "repo": "nixpkgs-mozilla",
+        "rev": "8c007b60731c07dd7a052cce508de3bb1ae849b4",
+        "type": "github"
+      },
+      "original": {
+        "owner": "mozilla",
+        "repo": "nixpkgs-mozilla",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1612653566,
+        "narHash": "sha256-7qjA9OgOJ97wzEsgElnFnIIrWJ57Wy8p2IuG85fJDZ0=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "8e78c2cfbae71720869c35b6710d652bf28b37cc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-20.09",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "crate2nix": "crate2nix",
+        "mozilla": "mozilla",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
