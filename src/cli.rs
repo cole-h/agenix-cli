@@ -430,9 +430,8 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
                 let mut ids = path.identities;
 
                 for group in path.groups {
-                    match conf.agenix.groups.get(&group) {
-                        Some(i) => ids.extend(i.clone()),
-                        None => (),
+                    if let Some(i) = conf.agenix.groups.get(&group) {
+                        ids.extend(i.clone());
                     }
                 }
 
