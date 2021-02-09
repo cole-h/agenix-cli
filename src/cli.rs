@@ -215,21 +215,19 @@ pub fn run() -> Result<()> {
         let cmd = Command::new(&editor)
             .arg(&temp_file.path())
             .stdin(Stdio::inherit())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::inherit())
             .stderr(Stdio::piped())
             .output()
             .wrap_err_with(|| format!("Failed to spawn editor '{}'", &editor))?;
 
         if !cmd.status.success() {
             let stderr = String::from_utf8_lossy(&cmd.stderr);
-            let stdout = String::from_utf8_lossy(&cmd.stdout);
 
             return Err(eyre!(
                 "Editor '{}' exited with non-zero status code",
                 &editor
             ))
-            .with_section(|| stderr.trim().to_string().header("Stderr:"))
-            .with_section(|| stdout.trim().to_string().header("Stdout:"));
+            .with_section(|| stderr.trim().to_string().header("Stderr:"));
         }
     }
 
