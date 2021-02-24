@@ -447,6 +447,8 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
                 for group in path.groups {
                     if let Some(i) = conf.agenix.groups.get(&group) {
                         ids.extend(i.clone());
+                    } else {
+                        warn!("group '{}' doesn't reference the [groups] table", group);
                     }
                 }
 
