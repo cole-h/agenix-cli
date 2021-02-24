@@ -49,6 +49,9 @@ struct Agenix {
     /// By default, output files are ASCII-armored.
     #[clap(short, long)]
     binary: bool,
+    /// Whether or not to encrypt a plaintext file in-place.
+    #[clap(short, long)]
+    encrypt_in_place: bool,
     /// The verbosity of logging.
     ///
     /// By default, only warnings and errors are printed.
@@ -218,8 +221,9 @@ pub fn run() -> Result<()> {
     };
     debug!("editor: '{}'", &editor);
 
-    let decrypted = self::try_decrypt_target_with_identities(&opts.path, &opts.identity)
-        .wrap_err_with(|| format!("Failed to decrypt file '{}'", &opts.path))?;
+    let decrypted =
+        self::try_decrypt_target_with_identities(&opts.path, &opts.identity, opts.encrypt_in_place)
+            .wrap_err_with(|| format!("Failed to decrypt file '{}'", &opts.path))?;
     let mut temp_file =
         self::create_temp_file(&relative_path).wrap_err("Failed to create temporary file")?;
 
@@ -230,7 +234,8 @@ pub fn run() -> Result<()> {
     }
 
     trace!("rekey? {}", opts.rekey);
-    if !opts.rekey {
+    trace!("encrypt_in_place? {}", opts.encrypt_in_place);
+    if !opts.rekey && !opts.encrypt_in_place {
         let cmd = Command::new(&editor)
             .arg(&temp_file.path())
             .stdin(Stdio::inherit())
@@ -268,7 +273,7 @@ pub fn run() -> Result<()> {
     }
 
     if let Some(ref dec) = decrypted {
-        if !opts.rekey && dec == &new_contents {
+        if !(opts.rekey || opts.encrypt_in_place) && dec == &new_contents {
             warn!("contents unchanged, not saving");
             return Ok(());
         }
@@ -351,6 +356,7 @@ fn try_encrypt_target_with_recipients(
 fn try_decrypt_target_with_identities(
     target: &str,
     identities: &[String],
+    encrypt_in_place: bool,
 ) -> Result<Option<Vec<u8>>> {
     let target = Path::new(&target);
 
@@ -363,26 +369,35 @@ fn try_decrypt_target_with_identities(
         b.read_to_end(&mut contents)
             .wrap_err_with(|| format!("Failed to read '{}'", &target.display()))?;
 
-        let dec = match Decryptor::new(ArmoredReader::new(&contents[..]))
-            .wrap_err_with(|| format!("Failed to parse header of '{}'", &target.display()))?
-        {
-            Decryptor::Recipients(d) => {
-                let mut decrypted = Vec::new();
-                let ids = self::get_identities(identities.to_vec())
-                    .wrap_err("Failed to get usable identity or identities")?;
-                let mut reader = d
-                    .decrypt(ids.into_iter())
-                    .wrap_err("Failed to decrypt contents")?;
-
-                reader
-                    .read_to_end(&mut decrypted)
-                    .wrap_err("Failed to read decrypted contents")?;
-
-                decrypted
+        let dec = match Decryptor::new(ArmoredReader::new(&contents[..])) {
+            Ok(_) if encrypt_in_place => {
+                bail!(
+                    "File '{}' is already encrypted; refusing to encrypt in place",
+                    &target.display()
+                );
             }
-            Decryptor::Passphrase(_) => {
-                bail!("Age password-encrypted files are not supported");
-            }
+            Err(_) if encrypt_in_place => contents,
+            Ok(decryptor) => match decryptor {
+                Decryptor::Recipients(d) => {
+                    let mut decrypted = Vec::new();
+                    let ids = self::get_identities(identities.to_vec())
+                        .wrap_err("Failed to get usable identity or identities")?;
+                    let mut reader = d
+                        .decrypt(ids.into_iter())
+                        .wrap_err("Failed to decrypt contents")?;
+
+                    reader
+                        .read_to_end(&mut decrypted)
+                        .wrap_err("Failed to read decrypted contents")?;
+
+                    decrypted
+                }
+                Decryptor::Passphrase(_) => {
+                    bail!("Age password-encrypted files are not supported");
+                }
+            },
+            Err(e) => Err(e)
+                .wrap_err_with(|| format!("Failed to parse header of '{}'", &target.display()))?,
         };
 
         Ok(Some(dec))
