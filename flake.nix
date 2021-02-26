@@ -80,7 +80,11 @@
                   inherit pkgs;
                 };
               in
-              cargoNix.rootCrate.build;
+              cargoNix.rootCrate.build // {
+                # buildRustCrate prefixes the package's name with `rust_`,
+                # making `nix run` fail. Force the name to `agenix`.
+                name = "agenix";
+              };
           in
           {
             inherit agenix;
