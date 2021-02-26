@@ -146,7 +146,7 @@ struct Config {
 pub fn run() -> Result<()> {
     let opts = Agenix::parse();
 
-    if opts.path.ends_with("/") || Path::new(&opts.path).is_dir() {
+    if opts.path.ends_with('/') || Path::new(&opts.path).is_dir() {
         bail!("agenix cannot operate on a directory. Please specify a filename (whether or not it exists).");
     }
 
@@ -181,7 +181,7 @@ pub fn run() -> Result<()> {
         .try_init()
         .wrap_err("Failed to initialize logging")?;
 
-    let conf_path = self::find_config_dir()?.ok_or(eyre!("Failed to find config root"))?;
+    let conf_path = self::find_config_dir()?.ok_or_else(|| eyre!("Failed to find config root"))?;
     let agenix_conf = toml::from_str::<AgenixConfig>(
         &self::read_config(&conf_path).wrap_err("Failed to read config file")?,
     )
@@ -298,7 +298,7 @@ fn create_dirs_to_file(file: &Path) -> Result<()> {
 
     let dir = file
         .parent()
-        .ok_or(eyre!("Path '{}' had no parent", file.display()))?;
+        .ok_or_else(|| eyre!("Path '{}' had no parent", file.display()))?;
 
     fs::create_dir_all(dir)
         .wrap_err_with(|| format!("Failed to create directories to '{}'", &dir.display()))?;
@@ -525,7 +525,7 @@ fn find_config_dir() -> Result<Option<PathBuf>> {
             .wrap_err_with(|| format!("Failed to canonicalize AGENIX_ROOT ('{}')", &root))?;
 
         if dir.is_dir() {
-            return Ok(Some(PathBuf::from(dir)));
+            return Ok(Some(dir));
         } else {
             warn!("AGENIX_ROOT ('{}') isn't a directory", dir.display())
         }
