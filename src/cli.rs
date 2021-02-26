@@ -236,13 +236,17 @@ pub fn run() -> Result<()> {
     trace!("rekey? {}", opts.rekey);
     trace!("encrypt_in_place? {}", opts.encrypt_in_place);
     if !opts.rekey && !opts.encrypt_in_place {
-        let cmd = Command::new(&editor)
+        let mut editor_parts : Vec<&str> = editor.split(' ').collect();
+        let binary_name = editor_parts.remove(0);
+
+        let cmd = Command::new(&binary_name)
+            .args(&editor_parts)
             .arg(&temp_file.path())
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::piped())
             .output()
-            .wrap_err_with(|| format!("Failed to spawn editor '{}'", &editor))?;
+            .wrap_err_with(|| format!("Failed to spawn editor '{}'", &binary_name))?;
 
         if !cmd.status.success() {
             let stderr = String::from_utf8_lossy(&cmd.stderr);
