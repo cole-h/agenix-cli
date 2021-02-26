@@ -213,14 +213,6 @@ pub fn run() -> Result<()> {
         );
     }
 
-    let editor = match env::var("EDITOR") {
-        Ok(editor) => editor,
-        Err(_) => env::var("VISUAL")
-            .map_err(|e| eyre!(e))
-            .wrap_err("Failed to find suitable editor")?,
-    };
-    debug!("editor: '{}'", &editor);
-
     let decrypted =
         self::try_decrypt_target_with_identities(&opts.path, &opts.identity, opts.encrypt_in_place)
             .wrap_err_with(|| format!("Failed to decrypt file '{}'", &opts.path))?;
@@ -236,7 +228,17 @@ pub fn run() -> Result<()> {
     trace!("rekey? {}", opts.rekey);
     trace!("encrypt_in_place? {}", opts.encrypt_in_place);
     if !opts.rekey && !opts.encrypt_in_place {
+        let (editor, args) =
+            self::find_suitable_editor().wrap_err("Failed to find suitable editor")?;
+        debug!("editor: '{}'", &editor);
+        debug!("args: '{:?}'", &args);
+
         let cmd = Command::new(&editor)
+            .args(if let Some(args) = args {
+                args
+            } else {
+                Vec::new()
+            })
             .arg(&temp_file.path())
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -587,6 +589,29 @@ fn create_temp_file(filename: &Path) -> Result<tempfile::NamedTempFile> {
         })?;
 
     Ok(temp_file)
+}
+
+/// Parse the `EDITOR` and / or `VISUAL` environment variables to find
+/// a suitable editor. If the editor contains whitespace, split on it
+/// and treat the first split as the binary, and all following splits
+/// as arguments.
+fn find_suitable_editor() -> Result<(String, Option<Vec<String>>)> {
+    let editor = env::var("EDITOR")
+        .or_else(|_| env::var("VISUAL"))
+        .map_err(|e| eyre!(e))?;
+
+    if editor.contains(' ') {
+        let mut split = editor.split_ascii_whitespace();
+        let editor = split.next();
+        let args = split.map(String::from).collect::<Vec<String>>();
+
+        Ok((
+            String::from(editor.ok_or_else(|| eyre!("EDITOR or VISUAL was empty"))?),
+            Some(args),
+        ))
+    } else {
+        Ok((editor, None))
+    }
 }
 
 // https://github.com/rust-lang/cargo/blob/fede83ccf973457de319ba6fa0e36ead454d2e20/src/cargo/util/paths.rs#L61-L86
