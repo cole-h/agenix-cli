@@ -57,6 +57,9 @@
         cargoNix.rootCrate.build);
     in
     {
+      # for use with update.sh script
+      inputs = builtins.removeAttrs inputs [ "self" ];
+
       devShell = forAllSystems ({ system, pkgs, ... }:
         pkgs.mkShell {
           name = "agenix";
