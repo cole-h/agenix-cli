@@ -385,7 +385,7 @@ fn try_decrypt_target_with_identities(
                     let ids = self::get_identities(identities.to_vec())
                         .wrap_err("Failed to get usable identity or identities")?;
                     let mut reader = d
-                        .decrypt(ids.into_iter())
+                        .decrypt(ids.iter().map(|i| i.as_ref() as &dyn age::Identity))
                         .wrap_err("Failed to decrypt contents")?;
 
                     reader

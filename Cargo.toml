@@ -7,8 +7,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/cole-h/agenix-cli"
 
 [dependencies]
-# TODO: https://github.com/str4d/rage/issues/194
-age = { git = "https://github.com/str4d/rage", default-features = false, features = [ "cli-common", "ssh", "armor" ] }
+age = { version = "0.6.0", default-features = false, features = [ "cli-common", "ssh", "armor" ] }
 clap = { version = "3.0.0-beta.2", default-features = false, features = [ "std", "cargo", "derive" ] }
 color-eyre = { version = "0.5.10", default-features = false, features = [ "track-caller" ] }
 env_logger = { version = "0.8.2", default-features = false, features = [ "termcolor", "atty" ] }
