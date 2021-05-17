@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Cole Helbling <cole.e.helbling@outlook.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/cole-h/agenix-rs"
+repository = "https://github.com/cole-h/agenix-cli"
 
 [dependencies]
 # TODO: https://github.com/str4d/rage/issues/194

@@ -1,4 +1,4 @@
-# agenix-rs
+# agenix-cli
 
 This project provides a binary, `agenix`, intended for use with
 https://github.com/ryantm/agenix and aims to provide a more sophisticated
