@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf, MAIN_SEPARATOR};
 use std::process::{Command, Stdio};
 
@@ -57,6 +57,13 @@ struct Agenix {
     /// By default, only warnings and errors are printed.
     #[clap(short, long, parse(from_occurrences))]
     verbose: u8,
+    /// Whether or not to read contents from stdin.
+    ///
+    /// NOTE: This does not support writing to an existing file.
+    ///
+    /// By default, an editor is spawned.
+    #[clap(short, long)]
+    stdin: bool,
 }
 
 /// The `.agenix.toml` configuration schema.
@@ -154,6 +161,10 @@ pub fn run() -> Result<()> {
         bail!("agenix cannot rekey a nonexistent file.");
     }
 
+    if opts.stdin && Path::new(&opts.path).exists() {
+        bail!("agenix does not allow writing contents from stdin to an existing file.");
+    }
+
     env_logger::Builder::new()
         .format(|buf, record| {
             let mut style = buf.style();
@@ -227,7 +238,7 @@ pub fn run() -> Result<()> {
 
     trace!("rekey? {}", opts.rekey);
     trace!("encrypt_in_place? {}", opts.encrypt_in_place);
-    if !opts.rekey && !opts.encrypt_in_place {
+    if !opts.rekey && !opts.encrypt_in_place && !opts.stdin {
         let (editor, args) =
             self::find_suitable_editor().wrap_err("Failed to find suitable editor")?;
         debug!("editor: '{}'", &editor);
@@ -257,31 +268,44 @@ pub fn run() -> Result<()> {
         }
     }
 
-    let mut new_contents = Vec::new();
-    let mut temp_file = fs::OpenOptions::new()
-        .read(true)
-        .open(&temp_file.path())
-        .wrap_err("Failed to open temporary file for reading")?;
+    let contents = if opts.stdin {
+        let mut input = Vec::new();
 
-    // Ensure the cursor is at the beginning of the file.
-    temp_file.seek(SeekFrom::Start(0))?;
-    temp_file
-        .read_to_end(&mut new_contents)
-        .wrap_err("Failed to read new contents from temporary file")?;
+        for byte in io::stdin().bytes() {
+            let b = byte?;
+            input.push(b);
+        }
 
-    if new_contents.is_empty() || new_contents == LF || new_contents == CRLF {
-        warn!("contents empty, not saving");
-        return Ok(());
-    }
+        input
+    } else {
+        let mut new_contents = Vec::new();
+        let mut temp_file = fs::OpenOptions::new()
+            .read(true)
+            .open(&temp_file.path())
+            .wrap_err("Failed to open temporary file for reading")?;
 
-    if let Some(ref dec) = decrypted {
-        if !(opts.rekey || opts.encrypt_in_place) && dec == &new_contents {
-            warn!("contents unchanged, not saving");
+        // Ensure the cursor is at the beginning of the file.
+        temp_file.seek(SeekFrom::Start(0))?;
+        temp_file
+            .read_to_end(&mut new_contents)
+            .wrap_err("Failed to read new contents from temporary file")?;
+
+        if new_contents.is_empty() || new_contents == LF || new_contents == CRLF {
+            warn!("contents empty, not saving");
             return Ok(());
         }
-    }
 
-    self::try_encrypt_target_with_recipients(&opts.path, recipients, new_contents, opts.binary)
+        if let Some(ref dec) = decrypted {
+            if !(opts.rekey || opts.encrypt_in_place) && dec == &new_contents {
+                warn!("contents unchanged, not saving");
+                return Ok(());
+            }
+        }
+
+        new_contents
+    };
+
+    self::try_encrypt_target_with_recipients(&opts.path, recipients, contents, opts.binary)
         .wrap_err_with(|| format!("Failed to encrypt file '{}'", &opts.path))?;
 
     Ok(())
