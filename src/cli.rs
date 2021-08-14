@@ -1,6 +1,6 @@
 //! The `agenix` command-line interface.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
@@ -33,10 +33,13 @@ const CRLF: [u8; 2] = [0x0d, 0x0a];
 #[derive(Clap, Debug)]
 struct Agenix {
     /// The file to edit.
-    path: String,
+    path: Option<String>,
     /// Whether to re-encrypt the specified file.
     #[clap(short, long)]
     rekey: bool,
+    /// Whether to re-encrypt all files.
+    #[clap(short = 'R', long)]
+    rekey_all: bool,
     /// The identity or identities to use for decryption. May be specified
     /// multiple times.
     ///
@@ -139,30 +142,44 @@ struct PathSpec {
     // TODO:  keyfile: Vec<PathBuf>? to sidestep the necessity of -i for age keys
 }
 
-/// A structure that contains the `.agenix.toml` configuration and the root
-/// directory of that configuration.
+/// A structure that contains the `.agenix.toml` configuration, the root
+/// directory of that configuration, the command line flags and the working
+/// directory.
 #[derive(Debug)]
 struct Config {
     /// The `.agenix.toml` configuration.
     agenix: AgenixConfig,
     /// The root directory of the configuration.
     root: PathBuf,
+    /// The options passed as parameters
+    opts: Agenix,
+    /// The path used as root for relative paths
+    current_path: PathBuf,
 }
 
 /// Run `agenix`.
 pub fn run() -> Result<()> {
     let opts = Agenix::parse();
 
-    if opts.path.ends_with('/') || Path::new(&opts.path).is_dir() {
-        bail!("agenix cannot operate on a directory. Please specify a filename (whether or not it exists).");
-    }
+    match &opts.path {
+        None => {
+            if !opts.rekey_all {
+                bail!("a path argument is required unless rekeying all files")
+            }
+        }
+        Some(path) => {
+            if path.ends_with('/') || Path::new(&path).is_dir() {
+                bail!("agenix cannot operate on a directory. Please specify a filename (whether or not it exists).");
+            }
 
-    if opts.rekey && !Path::new(&opts.path).exists() {
-        bail!("agenix cannot rekey a nonexistent file.");
-    }
+            if opts.rekey && !Path::new(&path).exists() {
+                bail!("agenix cannot rekey a nonexistent file.");
+            }
 
-    if opts.stdin && Path::new(&opts.path).exists() {
-        bail!("agenix does not allow writing contents from stdin to an existing file.");
+            if opts.stdin && Path::new(&path).exists() {
+                bail!("agenix does not allow writing contents from stdin to an existing file.");
+            }
+        }
     }
 
     env_logger::Builder::new()
@@ -198,12 +215,56 @@ pub fn run() -> Result<()> {
     )
     .wrap_err("Failed to parse config as TOML")?;
 
+    let current_path = env::current_dir().wrap_err("Failed to get current directory")?;
     let conf = Config {
         agenix: agenix_conf,
         root: conf_path,
+        opts,
+        current_path,
     };
 
-    let current_path = env::current_dir().wrap_err("Failed to get current directory")?;
+    let opts = &conf.opts;
+
+    trace!("rekey_all? {}", opts.rekey_all);
+    let paths = if opts.rekey_all {
+        let mut paths = HashSet::new();
+        for g in &conf.agenix.paths {
+            for p in glob::glob(&g.glob)
+                .wrap_err_with(|| format!("Failed to match glob pattern '{}'", &g.glob))?
+            {
+                paths.insert(p.wrap_err_with(|| {
+                    format!("Failed to iterate over glob pattern '{}'", &g.glob)
+                })?);
+            }
+        }
+        paths
+    } else {
+        // we check if this is present in the beginning
+        [PathBuf::from(opts.path.clone().unwrap())]
+            .iter()
+            .cloned()
+            .collect()
+    };
+
+    for path in paths {
+        let r = process_file(&conf, &path);
+        if !opts.rekey_all {
+            // there is only one file being processed, just return the error
+            r?;
+        } else if let Err(e) = r {
+            // when rekeying all keys, we log a bit more verbosely
+            eprintln!("Failed to rekey file '{}': {}", path.display(), e);
+        } else {
+            println!("File '{}' was rekeyed sucessfully", path.display());
+        }
+    }
+
+    Ok(())
+}
+
+fn process_file(conf: &Config, path: &PathBuf) -> Result<()> {
+    let opts = &conf.opts;
+    let current_path = &conf.current_path;
     let relative_path = current_path
         .strip_prefix(&conf.root)
         .wrap_err_with(|| {
@@ -213,8 +274,8 @@ pub fn run() -> Result<()> {
                 &current_path.display()
             )
         })?
-        .join(&opts.path);
-    let recipients = self::get_recipients_from_config(conf, &relative_path)
+        .join(&path);
+    let recipients = self::get_recipients_from_config(&conf, &relative_path)
         .wrap_err("Failed to get recipients from config file")?;
 
     if recipients.is_empty() {
@@ -225,8 +286,8 @@ pub fn run() -> Result<()> {
     }
 
     let decrypted =
-        self::try_decrypt_target_with_identities(&opts.path, &opts.identity, opts.encrypt_in_place)
-            .wrap_err_with(|| format!("Failed to decrypt file '{}'", &opts.path))?;
+        self::try_decrypt_target_with_identities(&path, &opts.identity, opts.encrypt_in_place)
+            .wrap_err_with(|| format!("Failed to decrypt file '{}'", &path.display()))?;
     let mut temp_file =
         self::create_temp_file(&relative_path).wrap_err("Failed to create temporary file")?;
 
@@ -237,35 +298,10 @@ pub fn run() -> Result<()> {
     }
 
     trace!("rekey? {}", opts.rekey);
+    trace!("rekey_all? {}", opts.rekey_all);
     trace!("encrypt_in_place? {}", opts.encrypt_in_place);
-    if !opts.rekey && !opts.encrypt_in_place && !opts.stdin {
-        let (editor, args) =
-            self::find_suitable_editor().wrap_err("Failed to find suitable editor")?;
-        debug!("editor: '{}'", &editor);
-        debug!("args: '{:?}'", &args);
-
-        let cmd = Command::new(&editor)
-            .args(if let Some(args) = args {
-                args
-            } else {
-                Vec::new()
-            })
-            .arg(&temp_file.path())
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::piped())
-            .output()
-            .wrap_err_with(|| format!("Failed to spawn editor '{}'", &editor))?;
-
-        if !cmd.status.success() {
-            let stderr = String::from_utf8_lossy(&cmd.stderr);
-
-            return Err(eyre!(
-                "Editor '{}' exited with non-zero status code",
-                &editor
-            ))
-            .with_section(|| stderr.trim().to_string().header("Stderr:"));
-        }
+    if !opts.rekey && !opts.rekey_all && !opts.encrypt_in_place && !opts.stdin {
+        try_edit_file(&temp_file.path())?;
     }
 
     let contents = if opts.stdin {
@@ -296,7 +332,7 @@ pub fn run() -> Result<()> {
         }
 
         if let Some(ref dec) = decrypted {
-            if !(opts.rekey || opts.encrypt_in_place) && dec == &new_contents {
+            if !(opts.rekey || opts.rekey_all || opts.encrypt_in_place) && dec == &new_contents {
                 warn!("contents unchanged, not saving");
                 return Ok(());
             }
@@ -305,8 +341,8 @@ pub fn run() -> Result<()> {
         new_contents
     };
 
-    self::try_encrypt_target_with_recipients(&opts.path, recipients, contents, opts.binary)
-        .wrap_err_with(|| format!("Failed to encrypt file '{}'", &opts.path))?;
+    self::try_encrypt_target_with_recipients(&path, recipients, contents, opts.binary)
+        .wrap_err_with(|| format!("Failed to encrypt file '{}'", &path.display()))?;
 
     Ok(())
 }
@@ -334,13 +370,11 @@ fn create_dirs_to_file(file: &Path) -> Result<()> {
 /// `recipients`, optionally in `binary` format (as opposed to the default of
 /// ASCII-armored text).
 fn try_encrypt_target_with_recipients(
-    target: &str,
+    target: &PathBuf,
     recipients: Vec<Box<dyn age::Recipient>>,
     contents: Vec<u8>,
     binary: bool,
 ) -> Result<()> {
-    let target = Path::new(&target);
-
     self::create_dirs_to_file(&target)
         .wrap_err_with(|| format!("Failed to create directories to '{}'", &target.display()))?;
 
@@ -376,16 +410,46 @@ fn try_encrypt_target_with_recipients(
     Ok(())
 }
 
+/// Open `target` for editing and wait for the user to complete the editing.
+fn try_edit_file(target: &Path) -> Result<()> {
+    let (editor, args) = self::find_suitable_editor().wrap_err("Failed to find suitable editor")?;
+    debug!("editor: '{}'", &editor);
+    debug!("args: '{:?}'", &args);
+
+    let cmd = Command::new(&editor)
+        .args(if let Some(args) = args {
+            args
+        } else {
+            Vec::new()
+        })
+        .arg(&target)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .output()
+        .wrap_err_with(|| format!("Failed to spawn editor '{}'", &editor))?;
+
+    if !cmd.status.success() {
+        let stderr = String::from_utf8_lossy(&cmd.stderr);
+
+        return Err(eyre!(
+            "Editor '{}' exited with non-zero status code",
+            &editor
+        ))
+        .with_section(|| stderr.trim().to_string().header("Stderr:"));
+    } else {
+        Ok(())
+    }
+}
+
 /// Try to decrypt the given target path with the specified identity.
 ///
 /// Uses [`get_identities`](get_identities) to find a valid identity.
 fn try_decrypt_target_with_identities(
-    target: &str,
+    target: &PathBuf,
     identities: &[String],
     encrypt_in_place: bool,
 ) -> Result<Option<Vec<u8>>> {
-    let target = Path::new(&target);
-
     if target.exists() && target.is_file() {
         let f = File::open(&target)
             .wrap_err_with(|| format!("Failed to open '{}'", &target.display()))?;
@@ -439,10 +503,13 @@ fn try_decrypt_target_with_identities(
 
 /// Parses the recipients of a specified path from the `.agenix.toml`
 /// configuration.
-fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn age::Recipient>>> {
+fn get_recipients_from_config(
+    conf: &Config,
+    target: &Path,
+) -> Result<Vec<Box<dyn age::Recipient>>> {
     let mut recipients: Vec<Box<dyn age::Recipient>> = Vec::new();
 
-    for path in conf.agenix.paths {
+    for path in &conf.agenix.paths {
         if path.identities.is_empty() && path.groups.is_empty() {
             bail!(
                 "Path '{}' has no associated identities or groups",
@@ -468,10 +535,10 @@ fn get_recipients_from_config(conf: Config, target: &Path) -> Result<Vec<Box<dyn
 
         if glob.matches(&target.display().to_string()) {
             let identities = {
-                let mut ids = path.identities;
+                let mut ids = path.identities.clone();
 
-                for group in path.groups {
-                    if let Some(i) = conf.agenix.groups.get(&group) {
+                for group in &path.groups {
+                    if let Some(i) = conf.agenix.groups.get(group) {
                         ids.extend(i.clone());
                     } else {
                         warn!("group '{}' doesn't reference the [groups] table", group);
