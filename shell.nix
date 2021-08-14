@@ -11,4 +11,4 @@ let
           || baseNameOf path != "result") ./.;
     };
 in
-flake.shellNix
+flake.shellNix.default
