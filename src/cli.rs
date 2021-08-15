@@ -1,6 +1,6 @@
 //! The `agenix` command-line interface.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
@@ -17,7 +17,7 @@ use color_eyre::{
     Section, SectionExt,
 };
 use env_logger::{fmt::Color, WriteStyle};
-use log::{debug, info, trace, warn, Level, LevelFilter};
+use log::{debug, error, info, trace, warn, Level, LevelFilter};
 use serde::Deserialize;
 
 /// The maximum number of directories `agenix` is allowed to ascend in search of
@@ -33,6 +33,8 @@ const CRLF: [u8; 2] = [0x0d, 0x0a];
 #[derive(Clap, Debug)]
 struct Agenix {
     /// The file to edit.
+    ///
+    /// Optional when used with `--rekey-all`, required otherwise.
     path: Option<String>,
     /// Whether to re-encrypt the specified file.
     #[clap(short, long)]
@@ -142,19 +144,14 @@ struct PathSpec {
     // TODO:  keyfile: Vec<PathBuf>? to sidestep the necessity of -i for age keys
 }
 
-/// A structure that contains the `.agenix.toml` configuration, the root
-/// directory of that configuration, the command line flags and the working
-/// directory.
+/// A structure that contains the `.agenix.toml` configuration and the root
+/// directory of that configuration.
 #[derive(Debug)]
 struct Config {
     /// The `.agenix.toml` configuration.
     agenix: AgenixConfig,
     /// The root directory of the configuration.
     root: PathBuf,
-    /// The options passed as parameters
-    opts: Agenix,
-    /// The path used as root for relative paths
-    current_path: PathBuf,
 }
 
 /// Run `agenix`.
@@ -164,7 +161,7 @@ pub fn run() -> Result<()> {
     match &opts.path {
         None => {
             if !opts.rekey_all {
-                bail!("a path argument is required unless rekeying all files")
+                bail!("agenix requires a path argument (unless rekeying all files).")
             }
         }
         Some(path) => {
@@ -219,52 +216,42 @@ pub fn run() -> Result<()> {
     let conf = Config {
         agenix: agenix_conf,
         root: conf_path,
-        opts,
-        current_path,
     };
-
-    let opts = &conf.opts;
 
     trace!("rekey_all? {}", opts.rekey_all);
-    let paths = if opts.rekey_all {
-        let mut paths = HashSet::new();
-        for g in &conf.agenix.paths {
-            for p in glob::glob(&g.glob)
-                .wrap_err_with(|| format!("Failed to match glob pattern '{}'", &g.glob))?
+    if opts.rekey_all {
+        let mut paths = Vec::new();
+        for pathspec in &conf.agenix.paths {
+            for path in glob::glob(&pathspec.glob)
+                .wrap_err_with(|| format!("Failed to match glob pattern '{}'", &pathspec.glob))?
             {
-                paths.insert(p.wrap_err_with(|| {
-                    format!("Failed to iterate over glob pattern '{}'", &g.glob)
-                })?);
+                let path = path.wrap_err_with(|| {
+                    format!("Failed to iterate over glob pattern '{}'", &pathspec.glob)
+                })?;
+                paths.push(path);
             }
         }
-        paths
-    } else {
-        // we check if this is present in the beginning
-        [PathBuf::from(opts.path.clone().unwrap())]
-            .iter()
-            .cloned()
-            .collect()
-    };
 
-    for path in paths {
-        let r = process_file(&conf, &path);
-        if !opts.rekey_all {
-            // there is only one file being processed, just return the error
-            r?;
-        } else if let Err(e) = r {
-            // when rekeying all keys, we log a bit more verbosely
-            eprintln!("Failed to rekey file '{}': {}", path.display(), e);
-        } else {
-            println!("File '{}' was rekeyed sucessfully", path.display());
+        for path in paths {
+            if let Err(e) = self::try_process_file(&conf, &path, &opts, &current_path) {
+                error!("Failed to rekey file '{}': {}", path.display(), e);
+            }
         }
+    } else {
+        // This `unwrap()` is safe because we verify that the path is specified if we're not in
+        // `rekey_all` mode.
+        self::try_process_file(&conf, &opts.path.clone().unwrap(), &opts, &current_path)?;
     }
 
     Ok(())
 }
 
-fn process_file(conf: &Config, path: &PathBuf) -> Result<()> {
-    let opts = &conf.opts;
-    let current_path = &conf.current_path;
+/// Try to process the specified path in order to decrypt and encrypt its contents.
+fn try_process_file<P>(conf: &Config, path: P, opts: &Agenix, current_path: &Path) -> Result<()>
+where
+    P: AsRef<Path>,
+{
+    let path = path.as_ref();
     let relative_path = current_path
         .strip_prefix(&conf.root)
         .wrap_err_with(|| {
@@ -286,7 +273,7 @@ fn process_file(conf: &Config, path: &PathBuf) -> Result<()> {
     }
 
     let decrypted =
-        self::try_decrypt_target_with_identities(&path, &opts.identity, opts.encrypt_in_place)
+        self::try_decrypt_target_with_identities(path, &opts.identity, opts.encrypt_in_place)
             .wrap_err_with(|| format!("Failed to decrypt file '{}'", &path.display()))?;
     let mut temp_file =
         self::create_temp_file(&relative_path).wrap_err("Failed to create temporary file")?;
@@ -301,7 +288,7 @@ fn process_file(conf: &Config, path: &PathBuf) -> Result<()> {
     trace!("rekey_all? {}", opts.rekey_all);
     trace!("encrypt_in_place? {}", opts.encrypt_in_place);
     if !opts.rekey && !opts.rekey_all && !opts.encrypt_in_place && !opts.stdin {
-        try_edit_file(&temp_file.path())?;
+        self::try_edit_file(&temp_file.path())?;
     }
 
     let contents = if opts.stdin {
@@ -370,7 +357,7 @@ fn create_dirs_to_file(file: &Path) -> Result<()> {
 /// `recipients`, optionally in `binary` format (as opposed to the default of
 /// ASCII-armored text).
 fn try_encrypt_target_with_recipients(
-    target: &PathBuf,
+    target: &Path,
     recipients: Vec<Box<dyn age::Recipient>>,
     contents: Vec<u8>,
     binary: bool,
@@ -446,7 +433,7 @@ fn try_edit_file(target: &Path) -> Result<()> {
 ///
 /// Uses [`get_identities`](get_identities) to find a valid identity.
 fn try_decrypt_target_with_identities(
-    target: &PathBuf,
+    target: &Path,
     identities: &[String],
     encrypt_in_place: bool,
 ) -> Result<Option<Vec<u8>>> {
