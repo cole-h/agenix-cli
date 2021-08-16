@@ -34,14 +34,11 @@ const CRLF: [u8; 2] = [0x0d, 0x0a];
 struct Agenix {
     /// The file to edit.
     ///
-    /// Optional when used with `--rekey-all`, required otherwise.
+    /// Optional when used with `--rekey` to rekey everything, required otherwise.
     path: Option<String>,
-    /// Whether to re-encrypt the specified file.
+    /// Whether to re-encrypt the specified file or all files, if no `path` is given.
     #[clap(short, long)]
     rekey: bool,
-    /// Whether to re-encrypt all files.
-    #[clap(short = 'R', long)]
-    rekey_all: bool,
     /// The identity or identities to use for decryption. May be specified
     /// multiple times.
     ///
@@ -160,8 +157,8 @@ pub fn run() -> Result<()> {
 
     match &opts.path {
         None => {
-            if !opts.rekey_all {
-                bail!("agenix requires a path argument (unless rekeying all files).")
+            if !opts.rekey {
+                bail!("agenix requires a path argument (unless rekeying).")
             }
         }
         Some(path) => {
@@ -218,8 +215,9 @@ pub fn run() -> Result<()> {
         root: conf_path,
     };
 
-    trace!("rekey_all? {}", opts.rekey_all);
-    if opts.rekey_all {
+    trace!("rekey? {}", opts.rekey);
+    trace!("path.is_none()? {}", opts.path.is_none());
+    if opts.rekey && opts.path.is_none() {
         let mut paths = Vec::new();
         for pathspec in &conf.agenix.paths {
             for path in glob::glob(&pathspec.glob)
@@ -235,11 +233,13 @@ pub fn run() -> Result<()> {
         for path in paths {
             if let Err(e) = self::try_process_file(&conf, &path, &opts, &current_path) {
                 error!("Failed to rekey file '{}': {}", path.display(), e);
+            } else {
+                info!("Successfully rekeyed file '{}'", path.display());
             }
         }
     } else {
         // This `unwrap()` is safe because we verify that the path is specified if we're not in
-        // `rekey_all` mode.
+        // `rekey` mode.
         self::try_process_file(&conf, &opts.path.clone().unwrap(), &opts, &current_path)?;
     }
 
@@ -285,9 +285,8 @@ where
     }
 
     trace!("rekey? {}", opts.rekey);
-    trace!("rekey_all? {}", opts.rekey_all);
     trace!("encrypt_in_place? {}", opts.encrypt_in_place);
-    if !opts.rekey && !opts.rekey_all && !opts.encrypt_in_place && !opts.stdin {
+    if !opts.rekey && !opts.encrypt_in_place && !opts.stdin {
         self::try_edit_file(&temp_file.path())?;
     }
 
@@ -319,7 +318,7 @@ where
         }
 
         if let Some(ref dec) = decrypted {
-            if !(opts.rekey || opts.rekey_all || opts.encrypt_in_place) && dec == &new_contents {
+            if !(opts.rekey || opts.encrypt_in_place) && dec == &new_contents {
                 warn!("contents unchanged, not saving");
                 return Ok(());
             }
