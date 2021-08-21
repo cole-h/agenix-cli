@@ -500,6 +500,7 @@ fn get_recipients_from_config(
     target: &Path,
 ) -> Result<Vec<Box<dyn age::Recipient>>> {
     let mut recipients: Vec<Box<dyn age::Recipient>> = Vec::new();
+    let mut matches = 0;
 
     for path in &conf.agenix.paths {
         if path.identities.is_empty() && path.groups.is_empty() {
@@ -559,8 +560,20 @@ fn get_recipients_from_config(
                 }
             }
 
-            break;
+            matches += 1;
         }
+    }
+
+    if matches == 0 {
+        warn!(
+            "Path '{}' is not matched by any configured glob pattern",
+            &target.display()
+        );
+    } else if 1 < matches {
+        warn!(
+            "Path '{}' is matched by more than one configured glob pattern",
+            &target.display()
+        );
     }
 
     Ok(recipients)
