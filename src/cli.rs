@@ -151,6 +151,12 @@ struct Config {
     root: PathBuf,
 }
 
+const MATCH_OPTS: glob::MatchOptions = glob::MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
+
 /// Run `agenix`.
 pub fn run() -> Result<()> {
     let opts = Agenix::parse();
@@ -220,7 +226,7 @@ pub fn run() -> Result<()> {
     if opts.rekey && opts.path.is_none() {
         let mut paths = Vec::new();
         for pathspec in &conf.agenix.paths {
-            for path in glob::glob(&pathspec.glob)
+            for path in glob::glob_with(&pathspec.glob, MATCH_OPTS)
                 .wrap_err_with(|| format!("Failed to match glob pattern '{}'", &pathspec.glob))?
             {
                 let path = path.wrap_err_with(|| {
@@ -519,7 +525,7 @@ fn get_recipients_from_config(
             );
         }
 
-        if glob.matches(&target.display().to_string()) {
+        if glob.matches_path_with(&target, MATCH_OPTS) {
             let identities = {
                 let mut ids = path.identities.clone();
 
