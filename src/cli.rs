@@ -34,7 +34,8 @@ const CRLF: [u8; 2] = [0x0d, 0x0a];
 struct Agenix {
     /// The file to edit.
     ///
-    /// Optional when used with `--rekey` to rekey everything, required otherwise.
+    /// Optional when used with `--rekey` to rekey everything or validating the
+    /// config, required otherwise.
     path: Option<String>,
     /// Whether to re-encrypt the specified file or all files, if no `path` is given.
     #[clap(short, long)]
@@ -66,6 +67,9 @@ struct Agenix {
     /// By default, an editor is spawned.
     #[clap(short, long)]
     stdin: bool,
+    /// Validate the config file.
+    #[clap(long)]
+    validate_config: bool,
 }
 
 /// The `.agenix.toml` configuration schema.
@@ -163,8 +167,8 @@ pub fn run() -> Result<()> {
 
     match &opts.path {
         None => {
-            if !opts.rekey {
-                bail!("agenix requires a path argument (unless rekeying).")
+            if !opts.rekey && !opts.validate_config {
+                bail!("agenix requires a path argument (unless rekeying or validating the config).")
             }
         }
         Some(path) => {
@@ -221,9 +225,12 @@ pub fn run() -> Result<()> {
         root: conf_path,
     };
 
+    trace!("validate_config? {}", opts.validate_config);
     trace!("rekey? {}", opts.rekey);
     trace!("path.is_none()? {}", opts.path.is_none());
-    if opts.rekey && opts.path.is_none() {
+    if opts.validate_config {
+        self::validate_config(&conf)?;
+    } else if opts.rekey && opts.path.is_none() {
         let mut paths = Vec::new();
         for pathspec in &conf.agenix.paths {
             for path in glob::glob_with(&pathspec.glob, MATCH_OPTS)
@@ -247,6 +254,91 @@ pub fn run() -> Result<()> {
         // This `unwrap()` is safe because we verify that the path is specified if we're not in
         // `rekey` mode.
         self::try_process_file(&conf, &opts.path.clone().unwrap(), &opts, &current_path)?;
+    }
+
+    Ok(())
+}
+
+/// Validates the config and logs any errors found in the config.
+fn validate_config(conf: &Config) -> Result<()> {
+    // validate keys
+    for (identity, key) in &conf.agenix.identities {
+        if self::try_parse_key_to_recipient(&key).is_none() {
+            warn!(
+                "Identity '{}' is not a valid age, ssh-rsa, or ssh-ed25591 public key",
+                &identity
+            );
+        }
+    }
+
+    for (group, identities) in &conf.agenix.groups {
+        // check for empty groups
+        if identities.is_empty() {
+            warn!("Group '{}' contains no identities", group);
+        }
+
+        // check for groups with unknown identites
+        for identity in identities {
+            if !conf.agenix.identities.contains_key(identity) {
+                warn!("Group '{}' contains unknown identity '{}'", group, identity);
+            }
+        }
+    }
+
+    let mut patterns_by_path = HashMap::new();
+    for pathspec in &conf.agenix.paths {
+        // collect patterns matching each path
+        for path in glob::glob_with(&pathspec.glob, MATCH_OPTS)
+            .wrap_err_with(|| format!("Failed to match glob pattern '{}'", &pathspec.glob))?
+        {
+            let path = path.wrap_err_with(|| {
+                format!("Failed to iterate over glob pattern '{}'", &pathspec.glob)
+            })?;
+            let patterns = patterns_by_path.entry(path).or_insert_with(|| Vec::new());
+            patterns.push(pathspec.glob.clone());
+        }
+
+        // check for paths without group or identity
+        if pathspec.identities.is_empty() && pathspec.groups.is_empty() {
+            warn!(
+                "Path glob '{}' has no associated identities or groups",
+                pathspec.glob
+            );
+        }
+
+        // check for unkown identities
+        for identity in &pathspec.identities {
+            if !conf.agenix.identities.contains_key(identity)
+                && self::try_parse_key_to_recipient(identity).is_none()
+            {
+                warn!(
+                        "Path glob '{}' has associated identity '{}' which is neither a valid key nor a name of an identity",
+                        pathspec.glob, identity
+                    );
+            }
+        }
+
+        // check for unkown groups
+        for group in &pathspec.groups {
+            if !conf.agenix.groups.contains_key(group) {
+                warn!(
+                    "Path glob '{}' has unknown associated group '{}'",
+                    pathspec.glob, group
+                );
+            }
+        }
+    }
+
+    // check for paths matched by multiple patterns
+    for (path, patterns) in patterns_by_path {
+        if 1 < patterns.len() {
+            warn!(
+                "Path '{}' is matched by {} glob patterns ('{}')",
+                &path.display(),
+                &patterns.len(),
+                &patterns.join("', '")
+            );
+        }
     }
 
     Ok(())
@@ -493,6 +585,19 @@ fn try_decrypt_target_with_identities(
     }
 }
 
+/// Tries parsing the given key into a Recipient. Returns None if parsing fails
+fn try_parse_key_to_recipient(key: &str) -> Option<Box<dyn age::Recipient>> {
+    if let Ok(pk) = key.parse::<age::x25519::Recipient>().map(Box::new) {
+        trace!("got valid age identity '{}'", &key);
+        Some(pk)
+    } else if let Ok(pk) = key.parse::<age::ssh::Recipient>().map(Box::new) {
+        trace!("got valid ssh identity '{}'", &key);
+        Some(pk)
+    } else {
+        None
+    }
+}
+
 /// Parses the recipients of a specified path from the `.agenix.toml`
 /// configuration.
 fn get_recipients_from_config(
@@ -504,7 +609,7 @@ fn get_recipients_from_config(
 
     for path in &conf.agenix.paths {
         if path.identities.is_empty() && path.groups.is_empty() {
-            bail!(
+            warn!(
                 "Path '{}' has no associated identities or groups",
                 &target.display()
             );
@@ -547,16 +652,13 @@ fn get_recipients_from_config(
                     None => &key,
                 };
 
-                if let Ok(pk) = key.parse::<age::x25519::Recipient>().map(Box::new) {
-                    trace!("got valid age identity '{}'", &key);
-                    recipients.push(pk);
-                } else if let Ok(pk) = key.parse::<age::ssh::Recipient>().map(Box::new) {
-                    trace!("got valid ssh identity '{}'", &key);
-                    recipients.push(pk);
-                } else {
-                    warn!("identity '{}' either:", &key);
-                    warn!("  * isn't a valid age, ssh-rsa, or ssh-ed25519 public key; or");
-                    warn!("  * doesn't reference the [identities] table");
+                match self::try_parse_key_to_recipient(&key) {
+                    Some(pk) => recipients.push(pk),
+                    None => {
+                        warn!("identity '{}' either:", &key);
+                        warn!("  * isn't a valid age, ssh-rsa, or ssh-ed25519 public key; or");
+                        warn!("  * doesn't reference the [identities] table");
+                    }
                 }
             }
 
