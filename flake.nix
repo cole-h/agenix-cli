@@ -1,7 +1,7 @@
 {
   description = "agenix-cli";
 
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-20.09";
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-21.11";
   inputs.crate2nix = { url = "github:kolloch/crate2nix"; flake = false; };
   inputs.mozilla = { url = "github:mozilla/nixpkgs-mozilla"; flake = false; };
 
