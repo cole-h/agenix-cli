@@ -16,27 +16,27 @@
       genAttrs = names: f: builtins.listToAttrs (map (n: nameValuePair n (f n)) names);
       allSystems = [ "x86_64-linux" "aarch64-linux" "i686-linux" "x86_64-darwin" ];
 
-      rustOverlay = final: prev:
-        let
-          rustChannel = prev.rustChannelOf {
-            channel = "1.47.0";
-            sha256 = "1hkisci4as93hx8ybf13bmxkj9jsvd4a9ilvjmw6n64w4jkc1nk9";
-          };
-        in
-        {
-          inherit rustChannel;
-          rustc = rustChannel.rust;
-          cargo = rustChannel.rust;
-        };
+      # rustOverlay = final: prev:
+      #   let
+      #     rustChannel = prev.rustChannelOf {
+      #       channel = "1.47.0";
+      #       sha256 = "1hkisci4as93hx8ybf13bmxkj9jsvd4a9ilvjmw6n64w4jkc1nk9";
+      #     };
+      #   in
+      #   {
+      #     inherit rustChannel;
+      #     rustc = rustChannel.rust;
+      #     cargo = rustChannel.rust;
+      #   };
 
       forAllSystems = f: genAttrs allSystems (system: f {
         inherit system;
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [
-            (import "${mozilla}/rust-overlay.nix")
-            rustOverlay
-          ];
+          # overlays = [
+          #   (import "${mozilla}/rust-overlay.nix")
+          #   rustOverlay
+          # ];
         };
       });
 
@@ -69,7 +69,7 @@
           buildInputs = with pkgs; [
             # rustChannel.rust provides tools like clippy, rustfmt, cargo,
             # rust-analyzer, rustc, and more.
-            (rustChannel.rust.override { extensions = [ "rust-src" ]; })
+            # (rustChannel.rust.override { extensions = [ "rust-src" ]; })
             crate2nix.${system}
           ];
         });
