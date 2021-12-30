@@ -1,8 +1,8 @@
 let
   flake = import
     (fetchTarball {
-      url = "https://github.com/edolstra/flake-compat/archive/535e7c011657b6111b706441e046d285807bc58d.tar.gz";
-      sha256 = "0h0iw41nbrarz1n39f0f94xkg4gjvl2vlhlqkivmbwrib5jwspnj";
+      url = "https://github.com/edolstra/flake-compat/archive/12c64ca55c1014cdc1b16ed5a804aa8576601ff2.tar.gz";
+      sha256 = "0jm6nzb83wa6ai17ly9fzpqc40wg1viib8klq8lby54agpl213w5";
     })
     {
       src = builtins.filterSource
