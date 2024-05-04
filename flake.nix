@@ -12,15 +12,17 @@
         lib = pkgs.lib;
       in
       {
-        packages.agenix-cli = pkgs.rustPlatform.buildRustPackage {
-          pname = "agenix-cli";
-          version = (lib.importTOML ./Cargo.toml).package.version;
+        packages = rec {
+          default = agenix-cli;
 
-          src = self;
-          cargoLock.lockFile = ./Cargo.lock;
+          agenix-cli = pkgs.rustPlatform.buildRustPackage {
+            pname = "agenix-cli";
+            version = (lib.importTOML ./Cargo.toml).package.version;
+
+            src = self;
+            cargoLock.lockFile = ./Cargo.lock;
+          };
         };
-
-        defaultPackage = self.packages.${system}.agenix-cli;
 
         devShell = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [ rustc cargo rustfmt ];
