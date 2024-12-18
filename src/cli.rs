@@ -11,7 +11,7 @@ use age::{
     armor::{ArmoredReader, ArmoredWriter, Format},
     Decryptor, Encryptor,
 };
-use clap::Clap;
+use clap::Parser;
 use color_eyre::{
     eyre::{bail, eyre, Result, WrapErr},
     Section, SectionExt,
@@ -30,7 +30,7 @@ const LF: [u8; 1] = [0x0a];
 const CRLF: [u8; 2] = [0x0d, 0x0a];
 
 /// The `agenix` command-line options.
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 struct Agenix {
     /// The file to edit.
     ///
@@ -45,7 +45,7 @@ struct Agenix {
     ///
     /// If unspecified, falls back to `~/.ssh/id_rsa` and `~/.ssh/id_ed25519`,
     /// whichever (if any) exists.
-    #[clap(short, long, number_of_values = 1, multiple = true)]
+    #[clap(short, long, number_of_values = 1, action = clap::ArgAction::Append)]
     identity: Vec<String>,
     /// Whether or not to save encrypted files in binary format.
     ///
@@ -58,7 +58,7 @@ struct Agenix {
     /// The verbosity of logging.
     ///
     /// By default, only warnings and errors are printed.
-    #[clap(short, long, parse(from_occurrences))]
+    #[clap(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
     /// Whether or not to read contents from stdin.
     ///
