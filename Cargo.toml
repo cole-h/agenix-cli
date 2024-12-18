@@ -8,7 +8,7 @@ repository = "https://github.com/cole-h/agenix-cli"
 
 [dependencies]
 age = { version = "0.6.0", default-features = false, features = [ "cli-common", "ssh", "armor" ] }
-clap = { version = "3.0.0-beta.2", default-features = false, features = [ "std", "cargo", "derive" ] }
+clap = { version = "4.5.23", default-features = false, features = [ "std", "cargo", "derive" ] }
 color-eyre = { version = "0.5.10", default-features = false, features = [ "track-caller" ] }
 env_logger = { version = "0.8.2", default-features = false, features = [ "termcolor", "atty" ] }
 glob = "0.3.0"
