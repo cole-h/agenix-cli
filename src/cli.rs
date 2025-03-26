@@ -352,7 +352,7 @@ where
     let path = path.as_ref();
     let relative_path = match current_path.strip_prefix(&conf.root) {
 		Ok(stripped) => stripped.join(path),
-		Err(_) => path.to_path_buf(),
+		Err(_) => env::current_dir()?.join(path),
 	};
     let recipients = self::get_recipients_from_config(&conf, &relative_path)
         .wrap_err("Failed to get recipients from config file")?;
