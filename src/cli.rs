@@ -610,18 +610,6 @@ fn get_recipients_from_config(
         let glob = glob::Pattern::new(&path.glob)
             .wrap_err_with(|| format!("Failed to construct glob pattern from '{}'", &path.glob))?;
 
-        // Roundabout way of checking whether or not a path is trying to escape
-        // the configured directory.
-        if self::normalize_path(&conf.root.join(&target))
-            .strip_prefix(&conf.root)
-            .is_err()
-        {
-            bail!(
-                "Path '{}' tried to escape the agenix config root",
-                &target.display()
-            );
-        }
-
         if glob.matches_path_with(&target, MATCH_OPTS) {
             let identities = {
                 let mut ids = path.identities.clone();
