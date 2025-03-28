@@ -352,14 +352,8 @@ where
     let path = path.as_ref();
     let relative_path = current_path
         .strip_prefix(&conf.root)
-        .wrap_err_with(|| {
-            format!(
-                "Failed to strip prefix '{}' of '{}'",
-                &conf.root.display(),
-                &current_path.display()
-            )
-        })?
-        .join(&path);
+        .unwrap_or(&env::current_dir().wrap_err("Failed to get current directory")?)
+        .join(path);
     let recipients = self::get_recipients_from_config(&conf, &relative_path)
         .wrap_err("Failed to get recipients from config file")?;
 
@@ -618,18 +612,6 @@ fn get_recipients_from_config(
         let target = self::normalize_path(&target);
         let glob = glob::Pattern::new(&path.glob)
             .wrap_err_with(|| format!("Failed to construct glob pattern from '{}'", &path.glob))?;
-
-        // Roundabout way of checking whether or not a path is trying to escape
-        // the configured directory.
-        if self::normalize_path(&conf.root.join(&target))
-            .strip_prefix(&conf.root)
-            .is_err()
-        {
-            bail!(
-                "Path '{}' tried to escape the agenix config root",
-                &target.display()
-            );
-        }
 
         if glob.matches_path_with(&target, MATCH_OPTS) {
             let identities = {
