@@ -350,7 +350,10 @@ where
     P: AsRef<Path>,
 {
     let path = path.as_ref();
-    let relative_path = current_path.strip_prefix(&conf.root).unwrap_or(&env::current_dir()?).join(path);
+    let relative_path = current_path
+        .strip_prefix(&conf.root)
+        .unwrap_or(&env::current_dir()?)
+        .join(path);
     let recipients = self::get_recipients_from_config(&conf, &relative_path)
         .wrap_err("Failed to get recipients from config file")?;
 
