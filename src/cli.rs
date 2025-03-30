@@ -253,7 +253,7 @@ pub fn run() -> Result<()> {
     } else {
         // This `unwrap()` is safe because we verify that the path is specified if we're not in
         // `rekey` mode.
-        self::try_process_file(&conf, &opts.path.clone().unwrap(), &opts, &current_path)?;
+        self::try_process_file(&conf, opts.path.clone().unwrap(), &opts, &current_path)?;
     }
 
     Ok(())
@@ -263,7 +263,7 @@ pub fn run() -> Result<()> {
 fn validate_config(conf: &Config) -> Result<()> {
     // validate keys
     for (identity, key) in &conf.agenix.identities {
-        if self::try_parse_key_to_recipient(&key).is_none() {
+        if self::try_parse_key_to_recipient(key).is_none() {
             warn!(
                 "Identity '{}' is not a valid age, ssh-rsa, or ssh-ed25591 public key",
                 &identity
@@ -294,7 +294,7 @@ fn validate_config(conf: &Config) -> Result<()> {
             let path = path.wrap_err_with(|| {
                 format!("Failed to iterate over glob pattern '{}'", &pathspec.glob)
             })?;
-            let patterns = patterns_by_path.entry(path).or_insert_with(|| Vec::new());
+            let patterns = patterns_by_path.entry(path).or_insert_with(Vec::new);
             patterns.push(pathspec.glob.clone());
         }
 
@@ -354,7 +354,7 @@ where
         .strip_prefix(&conf.root)
         .unwrap_or(&env::current_dir().wrap_err("Failed to get current directory")?)
         .join(path);
-    let recipients = self::get_recipients_from_config(&conf, &relative_path)
+    let recipients = self::get_recipients_from_config(conf, &relative_path)
         .wrap_err("Failed to get recipients from config file")?;
 
     if recipients.is_empty() {
@@ -372,14 +372,14 @@ where
 
     if let Some(ref dec) = decrypted {
         temp_file
-            .write_all(&dec)
+            .write_all(dec)
             .wrap_err("Failed to write decrypted contents to temporary file")?;
     }
 
     trace!("rekey? {}", opts.rekey);
     trace!("encrypt_in_place? {}", opts.encrypt_in_place);
     if !opts.rekey && !opts.encrypt_in_place && !opts.stdin {
-        self::try_edit_file(&temp_file.path())?;
+        self::try_edit_file(temp_file.path())?;
     }
 
     let contents = if opts.stdin {
@@ -395,7 +395,7 @@ where
         let mut new_contents = Vec::new();
         let mut temp_file = fs::OpenOptions::new()
             .read(true)
-            .open(&temp_file.path())
+            .open(temp_file.path())
             .wrap_err("Failed to open temporary file for reading")?;
 
         // Ensure the cursor is at the beginning of the file.
@@ -419,7 +419,7 @@ where
         new_contents
     };
 
-    self::try_encrypt_target_with_recipients(&path, recipients, contents, opts.binary)
+    self::try_encrypt_target_with_recipients(path, recipients, contents, opts.binary)
         .wrap_err_with(|| format!("Failed to encrypt file '{}'", &path.display()))?;
 
     Ok(())
@@ -453,14 +453,14 @@ fn try_encrypt_target_with_recipients(
     contents: Vec<u8>,
     binary: bool,
 ) -> Result<()> {
-    self::create_dirs_to_file(&target)
+    self::create_dirs_to_file(target)
         .wrap_err_with(|| format!("Failed to create directories to '{}'", &target.display()))?;
 
     let target = fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open(&target)
+        .open(target)
         .wrap_err_with(|| format!("Failed to open '{}' for writing", &target.display()))?;
 
     trace!("binary format? {}", binary);
@@ -495,12 +495,8 @@ fn try_edit_file(target: &Path) -> Result<()> {
     debug!("args: '{:?}'", &args);
 
     let cmd = Command::new(&editor)
-        .args(if let Some(args) = args {
-            args
-        } else {
-            Vec::new()
-        })
-        .arg(&target)
+        .args(args.unwrap_or_default())
+        .arg(target)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::piped())
@@ -510,11 +506,11 @@ fn try_edit_file(target: &Path) -> Result<()> {
     if !cmd.status.success() {
         let stderr = String::from_utf8_lossy(&cmd.stderr);
 
-        return Err(eyre!(
+        Err(eyre!(
             "Editor '{}' exited with non-zero status code",
             &editor
         ))
-        .with_section(|| stderr.trim().to_string().header("Stderr:"));
+        .with_section(|| stderr.trim().to_string().header("Stderr:"))
     } else {
         Ok(())
     }
@@ -529,7 +525,7 @@ fn try_decrypt_target_with_identities(
     encrypt_in_place: bool,
 ) -> Result<Option<Vec<u8>>> {
     if target.exists() && target.is_file() {
-        let f = File::open(&target)
+        let f = File::open(target)
             .wrap_err_with(|| format!("Failed to open '{}'", &target.display()))?;
         let mut b = BufReader::new(f);
         let mut contents = Vec::new();
@@ -609,7 +605,7 @@ fn get_recipients_from_config(
             );
         }
 
-        let target = self::normalize_path(&target);
+        let target = self::normalize_path(target);
         let glob = glob::Pattern::new(&path.glob)
             .wrap_err_with(|| format!("Failed to construct glob pattern from '{}'", &path.glob))?;
 
@@ -634,7 +630,7 @@ fn get_recipients_from_config(
                     None => &key,
                 };
 
-                match self::try_parse_key_to_recipient(&key) {
+                match self::try_parse_key_to_recipient(key) {
                     Some(pk) => recipients.push(pk),
                     None => {
                         warn!("identity '{}' either:", &key);
@@ -675,7 +671,7 @@ fn get_identities(mut identities: Vec<String>) -> Result<Vec<Box<dyn age::Identi
         format!("{}/.ssh/id_ed25519", home),
     ]);
 
-    identities.retain(|id| fs::metadata(&id).is_ok());
+    identities.retain(|id| fs::metadata(id).is_ok());
 
     if !identities.is_empty() {
         debug!("using {:?} as identity file(s)", &identities);
@@ -728,7 +724,7 @@ fn find_config_dir() -> Result<Option<PathBuf>> {
 
 /// Read the config file and return its contents as a `String`.
 fn read_config(conf_path: &Path) -> Result<String> {
-    let file = File::open(&conf_path.join(".agenix.toml"))
+    let file = File::open(conf_path.join(".agenix.toml"))
         .wrap_err_with(|| format!("Failed to find .agenix.toml in '{}'", &conf_path.display()))?;
     let mut buf = BufReader::new(file);
     let mut contents = String::new();
@@ -746,7 +742,7 @@ fn read_config(conf_path: &Path) -> Result<String> {
 /// Create a tempfile in `$XDG_RUNTIME_DIR` (if set; falling back to `$TMPDIR`
 /// or `/tmp` if unset).
 fn create_temp_file(filename: &Path) -> Result<tempfile::NamedTempFile> {
-    let filename = self::normalize_path(&filename);
+    let filename = self::normalize_path(filename);
     let filename = format!("{}-", filename.display());
     let filename = filename.replace(MAIN_SEPARATOR, "-");
     let temp_dir = match env::var("XDG_RUNTIME_DIR") {
